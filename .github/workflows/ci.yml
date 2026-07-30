@@ -1,0 +1,211 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-shape:
+    name: Repository shape
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.detect.outputs.backend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Komponenten erkennen
+        id: detect
+        run: |
+          if [[ -f backend/pyproject.toml ]]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17 einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle einrichten
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Übersetzungen prüfen
+        run: ./scripts/check-translations.sh
+
+      - name: Android-Lint
+        run: ./gradlew --no-daemon :app:lintDebug
+
+      - name: Unit-Tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Debug und interne Beta bauen
+        env:
+          BASELINE_BETA_API_URL: https://beta.example.invalid/
+        run: ./gradlew --no-daemon :app:assembleDebug :app:assembleInternalBeta
+
+      - name: Beta-Konfiguration prüfen
+        run: ./scripts/check-beta-apk.sh app/build/outputs/apk/internalBeta/app-internalBeta.apk
+
+      - name: Beta-Artefakt benennen
+        id: package
+        run: |
+          artifact_path="$(./scripts/package-beta-apk.sh)"
+          echo "path=$artifact_path" >> "$GITHUB_OUTPUT"
+
+      - name: APK hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: internal-beta-apk-${{ github.sha }}
+          path: ${{ steps.package.outputs.path }}
+          retention-days: 7
+
+      - name: Test- und Lintberichte hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports-${{ github.sha }}
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  android-instrumented:
+    name: Android instrumented
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17 einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle einrichten
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compose-Navigationstests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest
+
+      - name: Instrumentierungsberichte hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-instrumented-reports-${{ github.sha }}
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  backend:
+    name: Backend
+    needs: repository-shape
+    if: needs.repository-shape.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: baseline
+          POSTGRES_PASSWORD: baseline
+          POSTGRES_DB: baseline_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U baseline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://baseline:baseline@localhost:5432/baseline_test
+      EXTERNAL_SERVICES_MODE: fake
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Abhängigkeiten installieren
+        run: make -C backend ci-install
+
+      - name: Formatierung
+        run: make -C backend ci-format
+
+      - name: Linting
+        run: make -C backend ci-lint
+
+      - name: Typprüfung
+        run: make -C backend ci-types
+
+      - name: Unit-Tests
+        run: make -C backend ci-unit
+
+      - name: API-Tests
+        run: make -C backend ci-api
+
+      - name: Datenbanktests
+        run: make -C backend ci-database
+
+      - name: Migrationen
+        run: make -C backend ci-migrations
+
+      - name: OpenAPI-Contract
+        run: make -C backend ci-openapi
+
+      - name: Backend-Berichte hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-reports-${{ github.sha }}
+          path: |
+            backend/artifacts/
+            backend/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Abhängigkeiten auf Schwachstellen prüfen
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate

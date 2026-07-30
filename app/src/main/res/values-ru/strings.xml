@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Baseline Nutrition</string>
+    <string name="loading_title">Подготовка Baseline</string>
+    <string name="loading_description">Проверяем защищённый сеанс.</string>
+    <string name="logged_out_title">Питание без лишней сложности.</string>
+    <string name="logged_out_description">Войдите или создайте новый аккаунт.</string>
+    <string name="continue_setup_title">Продолжить настройку</string>
+    <string name="continue_setup_description">Заполните профиль перед началом работы.</string>
+    <string name="diary_title">Ваш дневник</string>
+    <string name="diary_description">Сегодня приёмов пищи пока нет.</string>
+    <string name="technical_error_title">Что-то пошло не так</string>
+    <string name="technical_error_description">Попробуйте ещё раз. Ваши данные сохранены.</string>
+    <string name="retry">Повторить</string>
+</resources>
+

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Baseline Nutrition</string>
+    <string name="loading_title">Baseline wird vorbereitet</string>
+    <string name="loading_description">Deine sichere Sitzung wird geprüft.</string>
+    <string name="logged_out_title">Ernährung, klar erfasst.</string>
+    <string name="logged_out_description">Melde dich an oder richte ein neues Konto ein.</string>
+    <string name="continue_setup_title">Einrichtung fortsetzen</string>
+    <string name="continue_setup_description">Vervollständige dein Profil, bevor du startest.</string>
+    <string name="diary_title">Dein Tagebuch</string>
+    <string name="diary_description">Noch keine Mahlzeiten für heute.</string>
+    <string name="technical_error_title">Das hat nicht funktioniert</string>
+    <string name="technical_error_description">Bitte versuche es erneut. Deine Daten bleiben erhalten.</string>
+    <string name="retry">Erneut versuchen</string>
+</resources>
+
