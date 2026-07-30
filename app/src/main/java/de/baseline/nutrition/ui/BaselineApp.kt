@@ -2,6 +2,7 @@ package de.baseline.nutrition.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import de.baseline.nutrition.core.di.AppContainer
@@ -20,9 +21,14 @@ fun BaselineApp(
     BaselineTheme {
         when (val current = state) {
             AppLaunchState.Loading -> LoadingScreen()
-            is AppLaunchState.Ready -> NutritionNavHost(startDestination = current.destination)
+            is AppLaunchState.Ready -> key(current.destination) {
+                NutritionNavHost(
+                    startDestination = current.destination,
+                    container = container,
+                    onSessionChanged = appViewModel::restoreSession,
+                )
+            }
             AppLaunchState.TechnicalError -> TechnicalErrorScreen(onRetry = appViewModel::restoreSession)
         }
     }
 }
-

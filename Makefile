@@ -1,4 +1,4 @@
-.PHONY: quality android-lint android-test android-build translations
+.PHONY: quality android-lint android-test android-build translations backend-run access-code
 
 quality:
 	./scripts/quality-gate.sh
@@ -15,3 +15,8 @@ android-build:
 translations:
 	./scripts/check-translations.sh
 
+backend-run:
+	cd backend && python -m uvicorn baseline_api.main:app --reload
+
+access-code:
+	cd backend && python manage.py create-access-code --hours $${HOURS:-72}

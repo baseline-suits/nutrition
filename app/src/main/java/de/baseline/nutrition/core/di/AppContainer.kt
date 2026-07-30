@@ -1,14 +1,31 @@
 package de.baseline.nutrition.core.di
 
+import android.content.Context
 import de.baseline.nutrition.core.config.AppConfiguration
+import de.baseline.nutrition.core.config.BuildEnvironment
 import de.baseline.nutrition.core.coroutines.DefaultDispatcherProvider
 import de.baseline.nutrition.core.coroutines.DispatcherProvider
-import de.baseline.nutrition.data.session.LocalSessionRepository
-import de.baseline.nutrition.domain.session.SessionRepository
+import de.baseline.nutrition.data.auth.HttpAuthRepository
+import de.baseline.nutrition.data.network.ApiClient
+import de.baseline.nutrition.data.network.ServerSettingsStore
+import de.baseline.nutrition.data.profile.ProfileRepository
+import de.baseline.nutrition.data.session.SecureSessionStore
+import de.baseline.nutrition.domain.auth.AuthRepository
 
 class AppContainer(
+    context: Context,
     val configuration: AppConfiguration = AppConfiguration.current(),
     val dispatchers: DispatcherProvider = DefaultDispatcherProvider,
-    val sessionRepository: SessionRepository = LocalSessionRepository(),
-)
-
+) {
+    private val sessionStore = SecureSessionStore(context)
+    val serverSettings = ServerSettingsStore(
+        context = context,
+        defaultUrl = configuration.apiBaseUrl,
+        allowCleartext = configuration.environment == BuildEnvironment.Local,
+        sessionStore = sessionStore,
+    )
+    private val api = ApiClient(serverSettings::currentUrl, sessionStore)
+    val authRepository: AuthRepository = HttpAuthRepository(api, sessionStore)
+    val sessionRepository = authRepository
+    val profileRepository = ProfileRepository(api)
+}

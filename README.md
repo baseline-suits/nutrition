@@ -2,6 +2,9 @@
 
 Native Android-App für Baseline Nutrition.
 
+Das Repository enthält außerdem die private, versionierte Backend-API für
+Konten, Profile und Mahlzeiten.
+
 ## Voraussetzungen
 
 - JDK 17
@@ -36,6 +39,26 @@ BASELINE_BETA_API_URL=https://beta.example.invalid/ ./gradlew :app:assembleInter
 ```
 
 Die URLs sind Konfiguration, keine Geheimnisse. Tokens, Zugangscodes und API-Schlüssel dürfen weder als Gradle-Property noch als `BuildConfig`-Wert hinterlegt werden.
+
+## Backend lokal starten
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r backend/requirements-dev.txt
+make access-code HOURS=72
+make backend-run
+```
+
+Die API liegt unter `http://127.0.0.1:8000`, die OpenAPI-Dokumentation unter
+`/docs`. Standardmäßig wird `backend/baseline.db` verwendet; für Tests und
+Deployments kann `BASELINE_DATABASE` auf einen anderen Pfad gesetzt werden.
+Der Zugangscode wird nur beim Erzeugen im Klartext ausgegeben.
+
+Backendtests:
+
+```bash
+PYTHONPATH=backend pytest -q backend/tests
+```
 
 ## Qualitätsprüfungen
 

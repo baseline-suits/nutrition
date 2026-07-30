@@ -4,6 +4,5 @@ import android.app.Application
 import de.baseline.nutrition.core.di.AppContainer
 
 class BaselineApplication : Application() {
-    val container: AppContainer by lazy { AppContainer() }
+    val container: AppContainer by lazy { AppContainer(applicationContext) }
 }
-

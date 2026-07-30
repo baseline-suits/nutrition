@@ -5,3 +5,8 @@ local.properties
 artifacts/
 *.iml
 .DS_Store
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.db
+.venv/
