@@ -39,8 +39,23 @@ reproduzierbare Make-Ziele bereit:
 | `ci-database` | Integrationstests auf einer frischen temporären SQLite-Datenbank |
 | `ci-migrations` | leere Datenbank und Upgrade vom vorherigen Schema |
 | `ci-openapi` | OpenAPI-Contract nach `artifacts/openapi.json` |
+| `ci-eval` | Kostenlose, versionierte KI-Fixture-Evaluation nach `artifacts/eval/` |
 
 Die Tests verwenden ausschließlich Fixtures/Fakes für OpenAI/OpenRouter, Open Food Facts und Objektspeicher. CI-Secrets werden für Pull Requests aus Forks nicht bereitgestellt. Produktive KI-Evals gehören nicht zu den Pflichtchecks.
+
+Eine echte Modell-Evaluation wird vor Änderungen an Modell, Prompt oder Schema
+bewusst über den manuellen Workflow `Meal model evaluation` gestartet. Sie
+verwendet ausschließlich synthetische Repository-Testdaten, legt den Bericht
+30 Tage als Artefakt ab und läuft nie automatisch in Pull Requests.
+
+Die API speichert pro Analyse ausschließlich technische Metadaten wie
+Modell-/Prompt-/Schemaversion, Status, Latenz, Token-/Kostenschätzung und
+Fehlerkategorie. Vollständige Eingabetexte und Bilder werden nicht in
+Standardlogs oder Telemetrietabellen kopiert. `python backend/manage.py
+analysis-report --days 7` liefert Erfolgsrate, p50/p95, Kosten und einen
+auffälligen `health`-Status. Pro Nutzer gelten serverseitige Tages- und
+Wochenlimits; temporäre Fotos laufen nach spätestens 24 Stunden ab, sofern sie
+nicht bewusst an eine Mahlzeit gebunden wurden.
 
 ## Flaky Tests
 

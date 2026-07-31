@@ -1,10 +1,19 @@
 import hashlib
+import json
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
 from baseline_api import main
-from baseline_api.main import app, db, iso, migrate, now, uid
+from baseline_api.main import (
+    analysis_telemetry_summary,
+    app,
+    db,
+    iso,
+    migrate,
+    now,
+    uid,
+)
 
 
 def register(client: TestClient, username: str, code: str) -> str:
@@ -177,3 +186,38 @@ def test_analysis_is_user_bound_and_key_reuse_with_other_input_conflicts(tmp_pat
 
     assert changed.status_code == 409
     assert changed.json()["detail"]["code"] == "idempotency_conflict"
+
+
+def test_daily_safety_limit_and_telemetry_contain_only_technical_metrics(tmp_path, monkeypatch):
+    monkeypatch.setattr(main.settings, "database", tmp_path / "limits.db")
+    monkeypatch.setattr(main.settings, "analysis_daily_limit", 1)
+
+    def provider(*_args, **_kwargs):
+        return valid_model_result(), {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "estimated_cost_micros": 25,
+        }
+
+    monkeypatch.setattr(main, "call_analysis_provider", provider)
+    with TestClient(app) as client:
+        token = register(client, "limited-user", "limited-code-value-123456")
+        first = client.post(
+            "/v1/analysis",
+            json={"text": "Kartoffeln mit Quark", "locale": "de"},
+            headers=headers(token, "limit-first"),
+        )
+        limited = client.post(
+            "/v1/analysis",
+            json={"text": "Eine vollständig andere Mahlzeit", "locale": "de"},
+            headers=headers(token, "limit-second"),
+        )
+
+    assert first.status_code == 201
+    assert limited.status_code == 429
+    assert limited.json()["detail"]["code"] == "analysis_daily_limit"
+    report = analysis_telemetry_summary(1)
+    assert report["requests"] == 1
+    assert report["estimated_cost_micros"] == 25
+    assert report["health"] == "ok"
+    assert "Kartoffeln" not in json.dumps(report)

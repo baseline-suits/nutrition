@@ -173,6 +173,9 @@ jobs:
       - name: OpenAPI-Contract
         run: make -C backend ci-openapi
 
+      - name: KI-Contract-Evaluation
+        run: make -C backend ci-eval
+
       - name: Backend-Berichte hochladen
         if: always()
         uses: actions/upload-artifact@v4

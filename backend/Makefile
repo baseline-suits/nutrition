@@ -1,7 +1,7 @@
 PYTHON ?= python
 PYTEST = PYTHONPATH=. $(PYTHON) -m pytest
 
-.PHONY: ci-install ci-format ci-lint ci-types ci-unit ci-api ci-database ci-migrations ci-openapi quality
+.PHONY: ci-install ci-format ci-lint ci-types ci-unit ci-api ci-database ci-migrations ci-openapi ci-eval eval-live quality
 
 ci-install:
 	$(PYTHON) -m pip install -r requirements-dev.txt
@@ -31,4 +31,11 @@ ci-openapi:
 	PYTHONPATH=. $(PYTHON) scripts/export_openapi.py artifacts/openapi.json
 	diff -u openapi.snapshot.json artifacts/openapi.json
 
-quality: ci-format ci-lint ci-types ci-unit ci-api ci-database ci-migrations ci-openapi
+ci-eval:
+	$(PYTEST) -q tests/test_evals.py
+	PYTHONPATH=. $(PYTHON) scripts/run_evals.py --output-dir artifacts/eval
+
+eval-live:
+	EXTERNAL_SERVICES_MODE=live PYTHONPATH=. $(PYTHON) scripts/run_evals.py --live --output-dir artifacts/eval-live
+
+quality: ci-format ci-lint ci-types ci-unit ci-api ci-database ci-migrations ci-openapi ci-eval

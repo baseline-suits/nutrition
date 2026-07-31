@@ -1,0 +1,248 @@
+{
+  "suite_version": "baseline-meal-eval/1.0.0",
+  "cases": [
+    {
+      "id": "de-single-oats",
+      "language": "de",
+      "category": "single_food",
+      "input": {"type": "text", "text": "80 g Haferflocken"},
+      "required_ingredients": ["hafer"],
+      "forbidden_ingredients": ["milch", "zucker"],
+      "nutrient_ranges": {"energy": [280, 340]},
+      "fixture_output": {
+        "name": "Haferflocken",
+        "ingredients": [
+          {
+            "original_name": "Haferflocken",
+            "amount": "80",
+            "unit": "g",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "304",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "ru-tea-milk",
+      "language": "ru",
+      "category": "beverage",
+      "input": {"type": "text", "text": "Чай с небольшим количеством молока, без сахара"},
+      "required_ingredients": ["чай", "молок"],
+      "forbidden_ingredients": ["сахар", "мёд"],
+      "nutrient_ranges": {"energy": [5, 60]},
+      "fixture_output": {
+        "name": "Чай с молоком",
+        "ingredients": [
+          {
+            "original_name": "Чай",
+            "amount": "250",
+            "unit": "ml",
+            "nutrients": []
+          },
+          {
+            "original_name": "Молоко",
+            "amount": "30",
+            "unit": "ml",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "19",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          }
+        ],
+        "warnings": ["Точное количество молока неизвестно."]
+      }
+    },
+    {
+      "id": "de-bread-topping",
+      "language": "de",
+      "category": "bread_topping",
+      "input": {
+        "type": "text",
+        "text": "Zwei Scheiben Roggenbrot mit Frischkäse und Gurke"
+      },
+      "required_ingredients": ["roggenbrot", "frischkäse", "gurke"],
+      "forbidden_ingredients": ["butter", "schinken"],
+      "nutrient_ranges": {"energy": [220, 500]},
+      "fixture_output": {
+        "name": "Roggenbrot mit Frischkäse und Gurke",
+        "ingredients": [
+          {
+            "original_name": "Roggenbrot",
+            "amount": "100",
+            "unit": "g",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "230",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          },
+          {
+            "original_name": "Frischkäse",
+            "amount": "35",
+            "unit": "g",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "80",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          },
+          {
+            "original_name": "Gurke",
+            "amount": "40",
+            "unit": "g",
+            "nutrients": []
+          }
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "image-mixed-plate",
+      "language": "de",
+      "category": "mixed_plate",
+      "input": {
+        "type": "image",
+        "file": "images/mixed-rice-chicken-broccoli.jpg"
+      },
+      "required_ingredients": ["reis", "hähn", "brokkoli"],
+      "forbidden_ingredients": ["pommes", "avocado", "sauce"],
+      "nutrient_ranges": {"energy": [350, 900]},
+      "fixture_output": {
+        "name": "Reis mit Hähnchen und Brokkoli",
+        "ingredients": [
+          {
+            "original_name": "Reis",
+            "amount": "220",
+            "unit": "g",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "286",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          },
+          {
+            "original_name": "Hähnchenbrust",
+            "amount": "170",
+            "unit": "g",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "281",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          },
+          {
+            "original_name": "Brokkoli",
+            "amount": "160",
+            "unit": "g",
+            "nutrients": [
+              {
+                "key": "energy",
+                "value": "54",
+                "unit": "kcal",
+                "basis": "portion",
+                "source": "ai_estimate",
+                "locked": false,
+                "accuracy": "estimated"
+              }
+            ]
+          }
+        ],
+        "warnings": ["Mengen sind aus dem Foto geschätzt."]
+      }
+    },
+    {
+      "id": "image-packaged-bar",
+      "language": "de",
+      "category": "packaged_product",
+      "input": {
+        "type": "image",
+        "file": "images/packaged-protein-bar.jpg"
+      },
+      "required_ingredients": ["protein", "riegel"],
+      "forbidden_ingredients": ["banane", "nüsse"],
+      "nutrient_ranges": {},
+      "require_warning": true,
+      "fixture_output": {
+        "name": "Proteinriegel",
+        "ingredients": [
+          {
+            "original_name": "Proteinriegel",
+            "amount": "1",
+            "unit": "piece",
+            "nutrients": []
+          }
+        ],
+        "warnings": ["Ohne lesbare Nährwertangaben sind keine Nährwerte ableitbar."]
+      }
+    },
+    {
+      "id": "ru-ambiguous-portion",
+      "language": "ru",
+      "category": "ambiguous_portion",
+      "input": {"type": "text", "text": "Немного гречки с овощами"},
+      "required_ingredients": ["греч", "овощ"],
+      "forbidden_ingredients": ["мяс", "масло"],
+      "nutrient_ranges": {},
+      "require_warning": true,
+      "fixture_output": {
+        "name": "Гречка с овощами",
+        "ingredients": [
+          {
+            "original_name": "Гречка",
+            "amount": "150",
+            "unit": "g",
+            "nutrients": []
+          },
+          {
+            "original_name": "Овощи",
+            "amount": "100",
+            "unit": "g",
+            "nutrients": []
+          }
+        ],
+        "warnings": ["Количество указано приблизительно."]
+      }
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "suite_version": "baseline-meal-eval/1.0.0",
+  "cases": 6,
+  "schema_valid_rate": 1.0,
+  "required_ingredient_rate": 1.0,
+  "forbidden_ingredient_hits": 0,
+  "range_failures": 0,
+  "warning_failures": 0,
+  "languages": {
+    "de": {
+      "cases": 4,
+      "schema_valid": 4,
+      "required_hits": 9,
+      "required_total": 9
+    },
+    "ru": {
+      "cases": 2,
+      "schema_valid": 2,
+      "required_hits": 4,
+      "required_total": 4
+    }
+  },
+  "results": [
+    {
+      "id": "de-single-oats",
+      "language": "de",
+      "category": "single_food",
+      "schema_valid": true,
+      "required_hits": 1,
+      "required_total": 1,
+      "forbidden_hits": 0,
+      "ranges_ok": true,
+      "warning_ok": true,
+      "error": null
+    },
+    {
+      "id": "ru-tea-milk",
+      "language": "ru",
+      "category": "beverage",
+      "schema_valid": true,
+      "required_hits": 2,
+      "required_total": 2,
+      "forbidden_hits": 0,
+      "ranges_ok": true,
+      "warning_ok": true,
+      "error": null
+    },
+    {
+      "id": "de-bread-topping",
+      "language": "de",
+      "category": "bread_topping",
+      "schema_valid": true,
+      "required_hits": 3,
+      "required_total": 3,
+      "forbidden_hits": 0,
+      "ranges_ok": true,
+      "warning_ok": true,
+      "error": null
+    },
+    {
+      "id": "image-mixed-plate",
+      "language": "de",
+      "category": "mixed_plate",
+      "schema_valid": true,
+      "required_hits": 3,
+      "required_total": 3,
+      "forbidden_hits": 0,
+      "ranges_ok": true,
+      "warning_ok": true,
+      "error": null
+    },
+    {
+      "id": "image-packaged-bar",
+      "language": "de",
+      "category": "packaged_product",
+      "schema_valid": true,
+      "required_hits": 2,
+      "required_total": 2,
+      "forbidden_hits": 0,
+      "ranges_ok": true,
+      "warning_ok": true,
+      "error": null
+    },
+    {
+      "id": "ru-ambiguous-portion",
+      "language": "ru",
+      "category": "ambiguous_portion",
+      "schema_valid": true,
+      "required_hits": 2,
+      "required_total": 2,
+      "forbidden_hits": 0,
+      "ranges_ok": true,
+      "warning_ok": true,
+      "error": null
+    }
+  ],
+  "passed": true,
+  "mode": "fixture",
+  "telemetry": {
+    "model": "gpt-5.6-luna",
+    "prompt_version": "baseline-meal-analysis/1.0.0",
+    "schema_version": "nutrition-analysis-model-output/1.1.0"
+  }
+}

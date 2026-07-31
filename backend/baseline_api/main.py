@@ -90,6 +90,11 @@ class Settings:
         self.database = Path(os.environ.get("BASELINE_DATABASE", default))
         self.session_hours = int(os.environ.get("BASELINE_SESSION_HOURS", "720"))
         self.analysis_model = os.environ.get("BASELINE_ANALYSIS_MODEL", "gpt-5.6-luna")
+        self.analysis_daily_limit = int(os.environ.get("BASELINE_ANALYSIS_DAILY_LIMIT", "100"))
+        self.analysis_weekly_limit = int(os.environ.get("BASELINE_ANALYSIS_WEEKLY_LIMIT", "500"))
+        self.analysis_cost_alert_micros = int(
+            os.environ.get("BASELINE_ANALYSIS_COST_ALERT_MICROS", "50000000")
+        )
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
         self.openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
         self.external_services_mode = os.environ.get("EXTERNAL_SERVICES_MODE", "live")
@@ -722,6 +727,53 @@ def cleanup_expired_uploads() -> int:
             deleted += 1
         connection.commit()
     return deleted
+
+
+def analysis_telemetry_summary(days: int = 7) -> dict:
+    if not 1 <= days <= 365:
+        raise ValueError("days")
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT status,error_category,latency_ms,prompt_tokens,completion_tokens,
+                      estimated_cost_micros
+               FROM analysis_requests WHERE created_at>=?""",
+            (iso(now() - timedelta(days=days)),),
+        ).fetchall()
+    latencies = sorted(row["latency_ms"] for row in rows if row["latency_ms"] is not None)
+
+    def percentile(fraction: float) -> int | None:
+        if not latencies:
+            return None
+        return latencies[min(len(latencies) - 1, round((len(latencies) - 1) * fraction))]
+
+    errors: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if row["error_category"]:
+            errors[row["error_category"]] += 1
+    completed = sum(row["status"] == "completed" for row in rows)
+    cost = sum(row["estimated_cost_micros"] or 0 for row in rows)
+    success_rate = round(completed / len(rows), 4) if rows else None
+    health = "insufficient_data"
+    if rows:
+        health = (
+            "alert"
+            if success_rate is not None
+            and (success_rate < 0.9 or cost >= settings.analysis_cost_alert_micros)
+            else "ok"
+        )
+    return {
+        "days": days,
+        "requests": len(rows),
+        "completed": completed,
+        "success_rate": success_rate,
+        "p50_latency_ms": percentile(0.5),
+        "p95_latency_ms": percentile(0.95),
+        "prompt_tokens": sum(row["prompt_tokens"] or 0 for row in rows),
+        "completion_tokens": sum(row["completion_tokens"] or 0 for row in rows),
+        "estimated_cost_micros": cost,
+        "errors": dict(sorted(errors.items())),
+        "health": health,
+    }
 
 
 def snapshot(payload: MealInput) -> str:
@@ -1827,6 +1879,21 @@ def analyze_meal(
                 fail(409, "analysis_in_progress", "Die Analyse wird bereits verarbeitet.")
             fail(409, "analysis_failed", "Die Analyse ist fehlgeschlagen. Bitte neu starten.")
 
+        today = now().date().isoformat()
+        daily_count = connection.execute(
+            """SELECT COUNT(*) count FROM analysis_requests
+               WHERE user_id=? AND created_at>=?""",
+            (user.id, f"{today}T00:00:00+00:00"),
+        ).fetchone()["count"]
+        if daily_count >= settings.analysis_daily_limit:
+            fail(429, "analysis_daily_limit", "Das tägliche Analyselimit ist erreicht.")
+        weekly_count = connection.execute(
+            """SELECT COUNT(*) count FROM analysis_requests
+               WHERE user_id=? AND created_at>=?""",
+            (user.id, iso(now() - timedelta(days=7))),
+        ).fetchone()["count"]
+        if weekly_count >= settings.analysis_weekly_limit:
+            fail(429, "analysis_weekly_limit", "Das wöchentliche Analyselimit ist erreicht.")
         if payload.attachment_id:
             upload = load_upload(
                 connection,
