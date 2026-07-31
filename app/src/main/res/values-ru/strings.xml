@@ -149,6 +149,10 @@
     <string name="manual_entry_hint">Введите известные калории, макросы или ингредиенты без ИИ.</string>
     <string name="scan_barcode">Сканировать штрихкод</string>
     <string name="scan_barcode_hint">Отсканируйте упаковку или найдите продукт в Open Food Facts.</string>
+    <string name="favorites">Избранное</string>
+    <string name="favorites_hint">Выберите свой шаблон и проверьте его перед сохранением.</string>
+    <string name="recent_meals">Недавние приёмы пищи</string>
+    <string name="recent_meals_hint">Создайте независимый новый черновик из прошлого приёма пищи.</string>
     <string name="describe_food_example">Например: «Два ломтика ржаного хлеба со сливочным сыром и огурцом».</string>
     <string name="food_description">Описание приёма пищи</string>
     <string name="photo_description_optional">Дополнительное описание (необязательно)</string>
@@ -192,4 +196,19 @@
     <string name="product_rate_limit">Open Food Facts временно перегружен. Повторите попытку позже.</string>
     <string name="product_offline">Open Food Facts сейчас недоступен. Продукт не был добавлен.</string>
     <string name="product_amount_invalid">Введите корректное положительное количество.</string>
+    <string name="add_favorite">В избранное</string>
+    <string name="remove_favorite">Удалить из избранного</string>
+    <string name="scale_meal">Масштабировать весь приём пищи</string>
+    <string name="scale_factor">Коэффициент</string>
+    <string name="apply">Применить</string>
+    <string name="half_portion">Половина порции</string>
+    <string name="double_portion">Двойная порция</string>
+    <string name="loading_reuse">Загружаем шаблоны и историю…</string>
+    <string name="reuse_error">Не удалось загрузить шаблоны или историю. Сохранённые приёмы пищи не изменены.</string>
+    <string name="search_favorites">Поиск в избранном</string>
+    <string name="edit_template">Изменить шаблон</string>
+    <string name="rename_template">Переименовать шаблон</string>
+    <string name="favorite_display_name">Отображаемое имя</string>
+    <string name="add_again">Добавить снова</string>
+    <string name="reuse_empty">Здесь пока ничего нет. Можно добавить приём пищи вручную.</string>
 </resources>

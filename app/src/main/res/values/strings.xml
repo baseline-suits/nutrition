@@ -149,6 +149,10 @@
     <string name="manual_entry_hint">Trage bekannte Kalorien, Makros oder Zutaten ohne KI ein.</string>
     <string name="scan_barcode">Barcode scannen</string>
     <string name="scan_barcode_hint">Scanne ein verpacktes Produkt oder suche es bei Open Food Facts.</string>
+    <string name="favorites">Favoriten</string>
+    <string name="favorites_hint">Wähle eine eigene Vorlage und prüfe sie vor dem Speichern.</string>
+    <string name="recent_meals">Zuletzt gegessen</string>
+    <string name="recent_meals_hint">Übernimm eine frühere Mahlzeit als unabhängigen neuen Entwurf.</string>
     <string name="describe_food_example">Zum Beispiel: „Zwei Scheiben Roggenbrot mit Frischkäse und Gurke“.</string>
     <string name="food_description">Beschreibung der Mahlzeit</string>
     <string name="photo_description_optional">Ergänzende Beschreibung (optional)</string>
@@ -192,4 +196,19 @@
     <string name="product_rate_limit">Open Food Facts ist kurzzeitig ausgelastet. Bitte versuche es später erneut.</string>
     <string name="product_offline">Open Food Facts ist derzeit nicht erreichbar. Es wurde kein Produkt übernommen.</string>
     <string name="product_amount_invalid">Bitte gib eine gültige positive Menge ein.</string>
+    <string name="add_favorite">Als Favorit</string>
+    <string name="remove_favorite">Favorit entfernen</string>
+    <string name="scale_meal">Gesamte Mahlzeit skalieren</string>
+    <string name="scale_factor">Faktor</string>
+    <string name="apply">Anwenden</string>
+    <string name="half_portion">Halbe Portion</string>
+    <string name="double_portion">Doppelte Portion</string>
+    <string name="loading_reuse">Vorlagen und Verlauf werden geladen…</string>
+    <string name="reuse_error">Vorlagen oder Verlauf konnten nicht geladen werden. Deine gespeicherten Mahlzeiten bleiben erhalten.</string>
+    <string name="search_favorites">Favoriten suchen</string>
+    <string name="edit_template">Vorlage bearbeiten</string>
+    <string name="rename_template">Vorlage umbenennen</string>
+    <string name="favorite_display_name">Anzeigename</string>
+    <string name="add_again">Erneut eintragen</string>
+    <string name="reuse_empty">Hier ist noch nichts verfügbar. Du kannst eine Mahlzeit manuell erfassen.</string>
 </resources>

@@ -32,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -129,6 +130,8 @@ private fun DayScreen(
                         meals.forEach { meal ->
                             MealCard(
                                 meal = meal,
+                                isFavorite = state.favorites.any { it.originalMealId == meal.id },
+                                onToggleFavorite = { viewModel.toggleFavorite(meal) },
                                 onEdit = { viewModel.edit(meal) },
                                 onDuplicate = { viewModel.duplicate(meal) },
                                 onDelete = { deleteCandidate = meal },
@@ -198,7 +201,14 @@ private fun ProgressLine(label: Int, currentText: String?, targetText: String?, 
 }
 
 @Composable
-private fun MealCard(meal: MealDto, onEdit: () -> Unit, onDuplicate: () -> Unit, onDelete: () -> Unit) {
+private fun MealCard(
+    meal: MealDto,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onEdit: () -> Unit,
+    onDuplicate: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val totals = mealTotals(meal)
     val time = runCatching { OffsetDateTime.parse(meal.eatenAt).toLocalTime().withSecond(0).withNano(0) }.getOrNull()
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -214,7 +224,17 @@ private fun MealCard(meal: MealDto, onEdit: () -> Unit, onDuplicate: () -> Unit,
             if (micros.isNotEmpty()) {
                 Text(micros.joinToString(" · ") { "${it.key}: ${it.value} ${it.unit}" })
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
+            ) {
+                TextButton(onClick = onToggleFavorite) {
+                    Text(
+                        stringResource(
+                            if (isFavorite) R.string.remove_favorite else R.string.add_favorite,
+                        ),
+                    )
+                }
                 TextButton(onClick = onEdit) { Text(stringResource(R.string.edit)) }
                 TextButton(onClick = onDuplicate) { Text(stringResource(R.string.duplicate)) }
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.delete)) }
@@ -228,6 +248,7 @@ private fun MealEditorScreen(state: DiaryUiState, viewModel: DiaryViewModel) {
     val editor = state.editor ?: return
     var showMacros by rememberSaveable { mutableStateOf(editor.nutrients.protein.isNotBlank()) }
     var foodQuery by rememberSaveable { mutableStateOf("") }
+    var scaleFactor by rememberSaveable(editor.clientId) { mutableStateOf("1") }
     BackHandler(onBack = viewModel::requestCloseEditor)
     Column(
         modifier = Modifier
@@ -238,7 +259,16 @@ private fun MealEditorScreen(state: DiaryUiState, viewModel: DiaryViewModel) {
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
         TextButton(onClick = viewModel::requestCloseEditor) { Text(stringResource(R.string.back)) }
-        Text(stringResource(if (editor.mealId == null) R.string.new_meal else R.string.edit_meal), fontWeight = FontWeight.Bold)
+        Text(
+            stringResource(
+                when {
+                    state.favoriteEditor != null -> R.string.edit_template
+                    editor.mealId == null -> R.string.new_meal
+                    else -> R.string.edit_meal
+                },
+            ),
+            fontWeight = FontWeight.Bold,
+        )
         if (editor.analysisWarnings.isNotEmpty()) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(BaselineSpacing.medium)) {
@@ -262,6 +292,16 @@ private fun MealEditorScreen(state: DiaryUiState, viewModel: DiaryViewModel) {
             Field(editor.day, { viewModel.updateEditor(editor.copy(day = it)) }, R.string.date, Modifier.weight(1f))
             Field(editor.time, { viewModel.updateEditor(editor.copy(time = it)) }, R.string.time, Modifier.weight(1f))
         }
+        MealScaleControls(
+            factor = scaleFactor,
+            onFactor = { scaleFactor = it },
+            onApply = {
+                viewModel.scaleEditor(scaleFactor)
+                scaleFactor = "1"
+            },
+            onHalf = { viewModel.scaleEditor("0.5") },
+            onDouble = { viewModel.scaleEditor("2") },
+        )
         Text(stringResource(R.string.quick_nutrients), fontWeight = FontWeight.Bold)
         Field(editor.nutrients.energy, {
             viewModel.updateEditor(editor.copy(nutrients = editor.nutrients.copy(energy = it)))
@@ -363,6 +403,36 @@ private fun NutrientEditor(fields: NutrientFields, onChange: (NutrientFields) ->
         Field(fields.protein, { onChange(fields.copy(protein = it)) }, R.string.protein_g, Modifier.weight(1f))
         Field(fields.carbohydrates, { onChange(fields.copy(carbohydrates = it)) }, R.string.carbs_g, Modifier.weight(1f))
         Field(fields.fat, { onChange(fields.copy(fat = it)) }, R.string.fat_g, Modifier.weight(1f))
+    }
+}
+
+@Composable
+fun MealScaleControls(
+    factor: String,
+    onFactor: (String) -> Unit,
+    onApply: () -> Unit,
+    onHalf: () -> Unit,
+    onDouble: () -> Unit,
+) {
+    Text(stringResource(R.string.scale_meal), fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+        Field(
+            factor,
+            onFactor,
+            R.string.scale_factor,
+            Modifier.weight(1f).testTag("meal-scale-factor"),
+        )
+        Button(onClick = onApply, modifier = Modifier.testTag("meal-scale-apply")) {
+            Text(stringResource(R.string.apply))
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+        OutlinedButton(onClick = onHalf, modifier = Modifier.testTag("meal-scale-half")) {
+            Text(stringResource(R.string.half_portion))
+        }
+        OutlinedButton(onClick = onDouble, modifier = Modifier.testTag("meal-scale-double")) {
+            Text(stringResource(R.string.double_portion))
+        }
     }
 }
 

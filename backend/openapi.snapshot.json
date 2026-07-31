@@ -315,6 +315,109 @@
         "title": "DaySummary",
         "type": "object"
       },
+      "FavoriteCreate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          }
+        },
+        "title": "FavoriteCreate",
+        "type": "object"
+      },
+      "FavoriteOutput": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "meal": {
+            "$ref": "#/components/schemas/MealInput-Output"
+          },
+          "original_meal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Meal Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "original_meal_id",
+          "display_name",
+          "meal",
+          "created_at",
+          "updated_at",
+          "last_used_at"
+        ],
+        "title": "FavoriteOutput",
+        "type": "object"
+      },
+      "FavoriteUpdate": {
+        "properties": {
+          "display_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "meal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MealInput-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "FavoriteUpdate",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -328,7 +431,7 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "IngredientInput": {
+      "IngredientInput-Input": {
         "properties": {
           "amount": {
             "anyOf": [
@@ -358,6 +461,64 @@
           "nutrients": {
             "items": {
               "$ref": "#/components/schemas/NutrientInput-Input"
+            },
+            "maxItems": 100,
+            "title": "Nutrients",
+            "type": "array"
+          },
+          "original_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Original Name",
+            "type": "string"
+          },
+          "preparation": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preparation"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "original_name",
+          "amount",
+          "unit"
+        ],
+        "title": "IngredientInput",
+        "type": "object"
+      },
+      "IngredientInput-Output": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "normalized_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Name"
+          },
+          "nutrients": {
+            "items": {
+              "$ref": "#/components/schemas/NutrientInput-Output"
             },
             "maxItems": 100,
             "title": "Nutrients",
@@ -457,7 +618,7 @@
         "title": "IngredientOutput",
         "type": "object"
       },
-      "MealInput": {
+      "MealInput-Input": {
         "properties": {
           "attachment_id": {
             "anyOf": [
@@ -501,7 +662,7 @@
           },
           "ingredients": {
             "items": {
-              "$ref": "#/components/schemas/IngredientInput"
+              "$ref": "#/components/schemas/IngredientInput-Input"
             },
             "maxItems": 100,
             "title": "Ingredients",
@@ -537,6 +698,121 @@
           "nutrients": {
             "items": {
               "$ref": "#/components/schemas/NutrientInput-Input"
+            },
+            "maxItems": 100,
+            "title": "Nutrients",
+            "type": "array"
+          },
+          "provenance_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance Source"
+          },
+          "timezone": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "local_day",
+          "eaten_at",
+          "timezone",
+          "meal_type",
+          "name",
+          "capture_method"
+        ],
+        "title": "MealInput",
+        "type": "object"
+      },
+      "MealInput-Output": {
+        "properties": {
+          "attachment_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attachment Id"
+          },
+          "capture_method": {
+            "title": "Capture Method",
+            "type": "string"
+          },
+          "client_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Client Id",
+            "type": "string"
+          },
+          "eaten_at": {
+            "format": "date-time",
+            "title": "Eaten At",
+            "type": "string"
+          },
+          "external_reference": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Reference"
+          },
+          "ingredients": {
+            "items": {
+              "$ref": "#/components/schemas/IngredientInput-Output"
+            },
+            "maxItems": 100,
+            "title": "Ingredients",
+            "type": "array"
+          },
+          "local_day": {
+            "format": "date",
+            "title": "Local Day",
+            "type": "string"
+          },
+          "meal_type": {
+            "title": "Meal Type",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "nutrients": {
+            "items": {
+              "$ref": "#/components/schemas/NutrientInput-Output"
             },
             "maxItems": 100,
             "title": "Nutrients",
@@ -761,7 +1037,7 @@
           },
           "ingredients": {
             "items": {
-              "$ref": "#/components/schemas/IngredientInput"
+              "$ref": "#/components/schemas/IngredientInput-Input"
             },
             "maxItems": 100,
             "title": "Ingredients",
@@ -1634,6 +1910,45 @@
         "title": "Registration",
         "type": "object"
       },
+      "ReuseRequest": {
+        "properties": {
+          "client_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Client Id",
+            "type": "string"
+          },
+          "eaten_at": {
+            "format": "date-time",
+            "title": "Eaten At",
+            "type": "string"
+          },
+          "local_day": {
+            "format": "date",
+            "title": "Local Day",
+            "type": "string"
+          },
+          "meal_type": {
+            "title": "Meal Type",
+            "type": "string"
+          },
+          "timezone": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "local_day",
+          "eaten_at",
+          "timezone",
+          "meal_type"
+        ],
+        "title": "ReuseRequest",
+        "type": "object"
+      },
       "SessionResponse": {
         "properties": {
           "expires_at": {
@@ -2244,6 +2559,257 @@
         "summary": "Day Summary"
       }
     },
+    "/v1/favorites": {
+      "get": {
+        "operationId": "list_favorites_v1_favorites_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Query",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "recent",
+              "enum": [
+                "recent",
+                "alphabetical"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FavoriteOutput"
+                  },
+                  "title": "Response List Favorites V1 Favorites Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Favorites"
+      }
+    },
+    "/v1/favorites/{favorite_id}": {
+      "delete": {
+        "operationId": "delete_favorite_v1_favorites__favorite_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "favorite_id",
+            "required": true,
+            "schema": {
+              "title": "Favorite Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Favorite"
+      },
+      "put": {
+        "operationId": "update_favorite_v1_favorites__favorite_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "favorite_id",
+            "required": true,
+            "schema": {
+              "title": "Favorite Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FavoriteUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FavoriteOutput"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Favorite"
+      }
+    },
+    "/v1/favorites/{favorite_id}/draft": {
+      "post": {
+        "operationId": "favorite_draft_v1_favorites__favorite_id__draft_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "favorite_id",
+            "required": true,
+            "schema": {
+              "title": "Favorite Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReuseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MealInput-Output"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Favorite Draft"
+      }
+    },
     "/v1/meals": {
       "post": {
         "operationId": "create_meal_v1_meals_post",
@@ -2285,7 +2851,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MealInput"
+                "$ref": "#/components/schemas/MealInput-Input"
               }
             }
           },
@@ -2480,6 +3046,71 @@
         "summary": "Update Meal"
       }
     },
+    "/v1/meals/{meal_id}/draft": {
+      "post": {
+        "operationId": "recent_meal_draft_v1_meals__meal_id__draft_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meal_id",
+            "required": true,
+            "schema": {
+              "title": "Meal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReuseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MealInput-Output"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recent Meal Draft"
+      }
+    },
     "/v1/meals/{meal_id}/duplicate": {
       "post": {
         "operationId": "duplicate_meal_v1_meals__meal_id__duplicate_post",
@@ -2542,6 +3173,71 @@
           }
         },
         "summary": "Duplicate Meal"
+      }
+    },
+    "/v1/meals/{meal_id}/favorite": {
+      "post": {
+        "operationId": "create_favorite_v1_meals__meal_id__favorite_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meal_id",
+            "required": true,
+            "schema": {
+              "title": "Meal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FavoriteCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FavoriteOutput"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Favorite"
       }
     },
     "/v1/private-foods": {
@@ -3094,6 +3790,79 @@
           }
         },
         "summary": "Save Profile"
+      }
+    },
+    "/v1/recent-meals": {
+      "get": {
+        "operationId": "recent_meals_v1_recent_meals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MealOutput"
+                  },
+                  "title": "Response Recent Meals V1 Recent Meals Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recent Meals"
       }
     },
     "/v1/uploads": {

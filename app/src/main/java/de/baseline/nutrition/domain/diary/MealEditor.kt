@@ -54,21 +54,9 @@ data class IngredientDraft(
             return copy(amount = newAmount)
         }
         val factor = new.divide(old, 12, RoundingMode.HALF_UP)
-        fun scaled(value: String): String = parseLocalizedDecimal(value)?.multiply(factor)
-            ?.setScale(6, RoundingMode.HALF_UP)?.stripTrailingZeros()?.toPlainString().orEmpty()
         return copy(
             amount = newAmount,
-            nutrients = nutrients.copy(
-                energy = scaled(nutrients.energy), protein = scaled(nutrients.protein),
-                carbohydrates = scaled(nutrients.carbohydrates), fat = scaled(nutrients.fat),
-                additional = nutrients.additional.map { nutrient ->
-                    nutrient.copy(
-                        value = scaled(nutrient.value),
-                        source = "user",
-                        locked = true,
-                    )
-                },
-            ),
+            nutrients = nutrients.scaledBy(factor),
         )
     }
 }
@@ -131,6 +119,22 @@ data class MealEditorDraft(
             ingredients.forEach { add(it.nutrients.value(key)) }
         }.mapNotNull(::parseLocalizedDecimal)
         values.takeIf { it.isNotEmpty() }?.fold(BigDecimal.ZERO, BigDecimal::add)
+    }
+
+    fun scaled(factorText: String): MealEditorDraft {
+        val factor = requireNotNull(parseLocalizedDecimal(factorText))
+        require(factor > BigDecimal.ZERO)
+        return copy(
+            nutrients = nutrients.scaledBy(factor),
+            ingredients = ingredients.map { ingredient ->
+                val amount = requireNotNull(parseLocalizedDecimal(ingredient.amount))
+                require(amount > BigDecimal.ZERO)
+                ingredient.copy(
+                    amount = (amount * factor).canonical(),
+                    nutrients = ingredient.nutrients.scaledBy(factor),
+                )
+            },
+        )
     }
 
     fun toPayload(zoneId: ZoneId = ZoneId.systemDefault()): MealPayload {
@@ -200,6 +204,32 @@ data class MealEditorDraft(
     }
 }
 
+fun MealPayload.toEditorDraft(): MealEditorDraft {
+    val eaten = java.time.OffsetDateTime.parse(eatenAt)
+    return MealEditorDraft(
+        clientId = clientId,
+        name = name,
+        mealType = mealType,
+        day = localDay,
+        time = eaten.toLocalTime().withSecond(0).withNano(0).toString(),
+        note = note.orEmpty(),
+        nutrients = nutrients.toFields(),
+        ingredients = ingredients.map { ingredient ->
+            IngredientDraft(
+                name = ingredient.name,
+                preparation = ingredient.preparation.orEmpty(),
+                amount = ingredient.amount,
+                unit = ingredient.unit,
+                nutrients = ingredient.nutrients.toFields(),
+            )
+        },
+        captureMethod = captureMethod,
+        provenanceSource = provenanceSource ?: "user",
+        externalReference = externalReference,
+        attachmentId = null,
+    )
+}
+
 fun PrivateFoodDto.toIngredient(amountText: String = defaultAmount): IngredientDraft {
     val amount = parseLocalizedDecimal(amountText) ?: error("amount")
     require(amount > BigDecimal.ZERO)
@@ -237,6 +267,21 @@ fun parseLocalizedDecimal(input: String): BigDecimal? {
 }
 
 private val nutrientKeys = listOf("energy", "protein", "carbohydrates", "fat")
+
+private fun NutrientFields.scaledBy(factor: BigDecimal): NutrientFields {
+    fun scaled(value: String): String = parseLocalizedDecimal(value)?.multiply(factor)
+        ?.setScale(6, RoundingMode.HALF_UP)?.stripTrailingZeros()?.toPlainString().orEmpty()
+    return copy(
+        energy = scaled(energy),
+        protein = scaled(protein),
+        carbohydrates = scaled(carbohydrates),
+        fat = scaled(fat),
+        additional = additional.map { nutrient ->
+            nutrient.copy(value = scaled(nutrient.value))
+        },
+        originalValues = originalValues.mapValues { (_, value) -> scaled(value) },
+    )
+}
 
 private fun NutrientFields.toDtos(): List<NutrientDto> {
     val core = nutrientKeys.mapNotNull { key ->

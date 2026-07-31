@@ -48,4 +48,46 @@ class MealEditorTest {
         assertEquals("7.525", ingredient.nutrients.protein)
         assertEquals("", ingredient.nutrients.fat)
     }
+
+    @Test
+    fun scalesReusableMealHalfAndDoubleIncludingMicronutrients() {
+        val nutrients = NutrientFields(
+            energy = "100",
+            additional = listOf(
+                NutrientDto(
+                    key = "fiber",
+                    value = "8",
+                    unit = "g",
+                    source = "open_food_facts",
+                    locked = true,
+                ),
+            ),
+            sources = mapOf("energy" to "open_food_facts"),
+            locks = mapOf("energy" to true),
+            originalValues = mapOf("energy" to "100"),
+        )
+        val original = MealEditorDraft(
+            name = "Vorlage",
+            nutrients = nutrients,
+            ingredients = listOf(
+                IngredientDraft(name = "Teil", amount = "100", nutrients = nutrients),
+            ),
+        )
+
+        val half = original.scaled("0.5").toPayload()
+        val doubled = original.scaled("2").toPayload()
+
+        assertEquals("50", half.nutrients.first { it.key == "energy" }.value)
+        assertEquals("4", half.nutrients.first { it.key == "fiber" }.value)
+        assertEquals("50", half.ingredients.single().amount)
+        assertEquals("200", doubled.nutrients.first { it.key == "energy" }.value)
+        assertEquals("16", doubled.nutrients.first { it.key == "fiber" }.value)
+        assertEquals("200", doubled.ingredients.single().amount)
+        assertEquals(
+            "open_food_facts",
+            half.nutrients.first { it.key == "energy" }.source,
+        )
+        assertEquals(true, half.nutrients.first { it.key == "energy" }.locked)
+        assertEquals("100", original.ingredients.single().amount)
+    }
 }

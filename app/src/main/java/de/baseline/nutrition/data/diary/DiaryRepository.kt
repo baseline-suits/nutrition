@@ -69,6 +69,37 @@ data class MealDto(
 )
 
 @Serializable
+data class FavoriteDto(
+    val id: String,
+    @SerialName("original_meal_id") val originalMealId: String? = null,
+    @SerialName("display_name") val displayName: String,
+    val meal: MealPayload,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("updated_at") val updatedAt: String,
+    @SerialName("last_used_at") val lastUsedAt: String? = null,
+)
+
+@Serializable
+data class FavoriteCreatePayload(
+    @SerialName("display_name") val displayName: String? = null,
+)
+
+@Serializable
+data class FavoriteUpdatePayload(
+    @SerialName("display_name") val displayName: String,
+    val meal: MealPayload? = null,
+)
+
+@Serializable
+data class ReuseRequestPayload(
+    @SerialName("client_id") val clientId: String,
+    @SerialName("local_day") val localDay: String,
+    @SerialName("eaten_at") val eatenAt: String,
+    val timezone: String,
+    @SerialName("meal_type") val mealType: String,
+)
+
+@Serializable
 data class DaySummaryDto(
     @SerialName("local_day") val localDay: String,
     val totals: Map<String, String>,
@@ -151,4 +182,50 @@ class DiaryRepository(private val api: ApiClient) {
     suspend fun deletePrivateFood(id: String) {
         api.request<Unit, Unit>("/v1/private-foods/$id", "DELETE", authenticated = true)
     }
+
+    suspend fun favorites(query: String = "", sort: String = "recent"): List<FavoriteDto> {
+        val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.toString())
+        return api.request<Unit, List<FavoriteDto>>(
+            "/v1/favorites?query=$encoded&sort=$sort",
+            "GET",
+            authenticated = true,
+        )
+    }
+
+    suspend fun createFavorite(mealId: String, displayName: String): FavoriteDto =
+        api.request(
+            "/v1/meals/$mealId/favorite",
+            "POST",
+            FavoriteCreatePayload(displayName),
+            authenticated = true,
+        )
+
+    suspend fun updateFavorite(
+        id: String,
+        displayName: String,
+        meal: MealPayload? = null,
+    ): FavoriteDto =
+        api.request(
+            "/v1/favorites/$id",
+            "PUT",
+            FavoriteUpdatePayload(displayName, meal),
+            authenticated = true,
+        )
+
+    suspend fun deleteFavorite(id: String) {
+        api.request<Unit, Unit>("/v1/favorites/$id", "DELETE", authenticated = true)
+    }
+
+    suspend fun recentMeals(limit: Int = 30, offset: Int = 0): List<MealDto> =
+        api.request<Unit, List<MealDto>>(
+            "/v1/recent-meals?limit=$limit&offset=$offset",
+            "GET",
+            authenticated = true,
+        )
+
+    suspend fun favoriteDraft(id: String, payload: ReuseRequestPayload): MealPayload =
+        api.request("/v1/favorites/$id/draft", "POST", payload, authenticated = true)
+
+    suspend fun recentDraft(id: String, payload: ReuseRequestPayload): MealPayload =
+        api.request("/v1/meals/$id/draft", "POST", payload, authenticated = true)
 }

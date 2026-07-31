@@ -17,6 +17,9 @@ import de.baseline.nutrition.ui.diary.DiaryScreen
 import de.baseline.nutrition.ui.diary.DiaryViewModel
 import de.baseline.nutrition.ui.capture.CaptureScreen
 import de.baseline.nutrition.ui.capture.CaptureViewModel
+import de.baseline.nutrition.ui.reuse.ReuseMode
+import de.baseline.nutrition.ui.reuse.ReuseScreen
+import de.baseline.nutrition.ui.reuse.ReuseViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 
 @Composable
@@ -36,6 +39,9 @@ fun AccountHomeScreen(
     val barcodeViewModel: BarcodeViewModel = viewModel(
         factory = BarcodeViewModel.factory(productRepository, ioDispatcher),
     )
+    val reuseViewModel: ReuseViewModel = viewModel(
+        factory = ReuseViewModel.factory(diaryRepository, ioDispatcher),
+    )
     var activeFlow by rememberSaveable { mutableStateOf("diary") }
     when (activeFlow) {
         "capture" -> CaptureScreen(
@@ -49,6 +55,14 @@ fun AccountHomeScreen(
             onBarcode = {
                 captureViewModel.complete()
                 activeFlow = "barcode"
+            },
+            onFavorites = {
+                captureViewModel.complete()
+                activeFlow = "favorites"
+            },
+            onRecent = {
+                captureViewModel.complete()
+                activeFlow = "recent"
             },
             onManual = {
                 captureViewModel.complete()
@@ -82,6 +96,24 @@ fun AccountHomeScreen(
                 barcodeViewModel.complete()
                 activeFlow = "diary"
             },
+        )
+        "favorites", "recent" -> ReuseScreen(
+            viewModel = reuseViewModel,
+            mode = if (activeFlow == "favorites") ReuseMode.Favorites else ReuseMode.Recent,
+            selectedDay = diaryState.selectedDay.toString(),
+            onDraftReady = { draft ->
+                activeFlow = "diary"
+                diaryViewModel.openDraft(draft)
+            },
+            onEditTemplate = { favorite ->
+                activeFlow = "diary"
+                diaryViewModel.openFavoriteTemplate(favorite)
+            },
+            onManual = {
+                activeFlow = "diary"
+                diaryViewModel.newManualEntry()
+            },
+            onClose = { activeFlow = "diary" },
         )
         else -> DiaryScreen(
             diaryViewModel,

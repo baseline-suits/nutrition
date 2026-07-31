@@ -403,6 +403,40 @@ class MealOutput(MealInput):
     updated_at: datetime
 
 
+class FavoriteCreate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class FavoriteUpdate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+    meal: MealInput | None = None
+
+
+class FavoriteOutput(BaseModel):
+    id: str
+    original_meal_id: str | None
+    display_name: str
+    meal: MealInput
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None
+
+
+class ReuseRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=100)
+    local_day: date
+    eaten_at: datetime
+    timezone: str = Field(min_length=1, max_length=80)
+    meal_type: str
+
+    @field_validator("meal_type")
+    @classmethod
+    def known_meal_type(cls, value: str) -> str:
+        if value not in MEAL_TYPES:
+            raise ValueError("Unbekannter Mahlzeitentyp")
+        return value
+
+
 class PrivateFoodInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     brand: str | None = Field(default=None, max_length=200)
@@ -1259,6 +1293,61 @@ def load_meal(connection: sqlite3.Connection, user_id: str, meal_id: str) -> Mea
     return meals[0]
 
 
+def meal_snapshot(meal: MealOutput) -> MealInput:
+    values = meal.model_dump(
+        exclude={"id", "version", "totals", "created_at", "updated_at", "attachment_id"}
+    )
+    values["attachment_id"] = None
+    return MealInput(**values)
+
+
+def favorite_from_row(row: sqlite3.Row) -> FavoriteOutput:
+    return FavoriteOutput(
+        id=row["id"],
+        original_meal_id=row["original_meal_id"],
+        display_name=row["display_name"],
+        meal=MealInput.model_validate_json(row["snapshot_json"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+        last_used_at=datetime.fromisoformat(row["last_used_at"]) if row["last_used_at"] else None,
+    )
+
+
+def load_favorite(
+    connection: sqlite3.Connection,
+    user_id: str,
+    favorite_id: str,
+) -> FavoriteOutput:
+    row = connection.execute(
+        "SELECT * FROM favorites WHERE id=? AND user_id=?",
+        (favorite_id, user_id),
+    ).fetchone()
+    if not row:
+        fail(404, "not_found", "Favorit nicht gefunden.")
+    return favorite_from_row(row)
+
+
+def reuse_draft(snapshot_payload: MealInput, request: ReuseRequest) -> MealInput:
+    return MealInput(
+        **snapshot_payload.model_dump(
+            exclude={
+                "client_id",
+                "local_day",
+                "eaten_at",
+                "timezone",
+                "meal_type",
+                "attachment_id",
+            }
+        ),
+        client_id=request.client_id,
+        local_day=request.local_day,
+        eaten_at=request.eaten_at,
+        timezone=request.timezone,
+        meal_type=request.meal_type,
+        attachment_id=None,
+    )
+
+
 def load_private_food(
     connection: sqlite3.Connection, user_id: str, food_id: str
 ) -> PrivateFoodOutput:
@@ -2111,6 +2200,144 @@ def duplicate_meal(
         new_id = insert_meal(connection, user.id, payload)
         connection.commit()
         return load_meal(connection, user.id, new_id)
+
+
+@app.post("/v1/meals/{meal_id}/favorite", response_model=FavoriteOutput, status_code=201)
+def create_favorite(
+    meal_id: str,
+    payload: FavoriteCreate,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    with db() as connection:
+        original = load_meal(connection, user.id, meal_id)
+        existing = connection.execute(
+            "SELECT * FROM favorites WHERE user_id=? AND original_meal_id=?",
+            (user.id, meal_id),
+        ).fetchone()
+        if existing:
+            return favorite_from_row(existing)
+        favorite_id = uid()
+        stamp = iso(now())
+        favorite_meal = meal_snapshot(original)
+        connection.execute(
+            "INSERT INTO favorites VALUES (?,?,?,?,?,?,?,NULL)",
+            (
+                favorite_id,
+                user.id,
+                meal_id,
+                payload.display_name or original.name,
+                favorite_meal.model_dump_json(),
+                stamp,
+                stamp,
+            ),
+        )
+        connection.commit()
+        return load_favorite(connection, user.id, favorite_id)
+
+
+@app.get("/v1/favorites", response_model=list[FavoriteOutput])
+def list_favorites(
+    user: Annotated[UserContext, Depends(current_user)],
+    query: str = Query("", max_length=80),
+    sort: Literal["recent", "alphabetical"] = "recent",
+):
+    order = (
+        "display_name COLLATE NOCASE,id"
+        if sort == "alphabetical"
+        else "COALESCE(last_used_at,updated_at) DESC,display_name COLLATE NOCASE,id"
+    )
+    with db() as connection:
+        rows = connection.execute(
+            f"""SELECT * FROM favorites WHERE user_id=? AND display_name LIKE ?
+                ORDER BY {order} LIMIT 100""",
+            (user.id, f"%{query.strip()}%"),
+        ).fetchall()
+        return [favorite_from_row(row) for row in rows]
+
+
+@app.put("/v1/favorites/{favorite_id}", response_model=FavoriteOutput)
+def update_favorite(
+    favorite_id: str,
+    payload: FavoriteUpdate,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    with db() as connection:
+        favorite = load_favorite(connection, user.id, favorite_id)
+        snapshot_payload = (
+            payload.meal.model_copy(update={"attachment_id": None})
+            if payload.meal
+            else favorite.meal
+        )
+        connection.execute(
+            """UPDATE favorites SET display_name=?,snapshot_json=?,updated_at=?
+               WHERE id=? AND user_id=?""",
+            (
+                payload.display_name,
+                snapshot_payload.model_dump_json(),
+                iso(now()),
+                favorite_id,
+                user.id,
+            ),
+        )
+        connection.commit()
+        return load_favorite(connection, user.id, favorite_id)
+
+
+@app.delete("/v1/favorites/{favorite_id}", status_code=204)
+def delete_favorite(
+    favorite_id: str,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    with db() as connection:
+        changed = connection.execute(
+            "DELETE FROM favorites WHERE id=? AND user_id=?",
+            (favorite_id, user.id),
+        ).rowcount
+        connection.commit()
+    if not changed:
+        fail(404, "not_found", "Favorit nicht gefunden.")
+
+
+@app.post("/v1/favorites/{favorite_id}/draft", response_model=MealInput)
+def favorite_draft(
+    favorite_id: str,
+    payload: ReuseRequest,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    with db() as connection:
+        favorite = load_favorite(connection, user.id, favorite_id)
+        connection.execute(
+            "UPDATE favorites SET last_used_at=? WHERE id=? AND user_id=?",
+            (iso(now()), favorite_id, user.id),
+        )
+        connection.commit()
+        return reuse_draft(favorite.meal, payload)
+
+
+@app.get("/v1/recent-meals", response_model=list[MealOutput])
+def recent_meals(
+    user: Annotated[UserContext, Depends(current_user)],
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT id FROM meals WHERE user_id=? AND deleted_at IS NULL
+               ORDER BY eaten_at DESC,updated_at DESC,id LIMIT ? OFFSET ?""",
+            (user.id, limit, offset),
+        ).fetchall()
+        return load_meals(connection, user.id, [row["id"] for row in rows])
+
+
+@app.post("/v1/meals/{meal_id}/draft", response_model=MealInput)
+def recent_meal_draft(
+    meal_id: str,
+    payload: ReuseRequest,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    with db() as connection:
+        original = load_meal(connection, user.id, meal_id)
+        return reuse_draft(meal_snapshot(original), payload)
 
 
 @app.post("/v1/analysis", response_model=AnalysisDraft, status_code=201)

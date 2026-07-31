@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import de.baseline.nutrition.data.diary.DaySummaryDto
 import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.diary.DiaryTargets
+import de.baseline.nutrition.data.diary.FavoriteDto
 import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.PrivateFoodDto
 import de.baseline.nutrition.data.network.ApiException
@@ -13,6 +14,7 @@ import de.baseline.nutrition.domain.diary.IngredientDraft
 import de.baseline.nutrition.domain.diary.MealEditorDraft
 import de.baseline.nutrition.domain.diary.PrivateFoodEditorDraft
 import de.baseline.nutrition.domain.diary.toIngredient
+import de.baseline.nutrition.domain.diary.toEditorDraft
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import kotlinx.coroutines.CoroutineDispatcher
@@ -31,7 +33,9 @@ data class DiaryUiState(
     val summary: DaySummaryDto? = null,
     val targets: DiaryTargets? = null,
     val privateFoods: List<PrivateFoodDto> = emptyList(),
+    val favorites: List<FavoriteDto> = emptyList(),
     val editor: MealEditorDraft? = null,
+    val favoriteEditor: FavoriteDto? = null,
     val templateEditor: PrivateFoodEditorDraft? = null,
     val loading: Boolean = true,
     val saving: Boolean = false,
@@ -44,6 +48,13 @@ class DiaryViewModel(
     private val repository: DiaryRepository,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
+    private data class LoadedDiary(
+        val meals: List<MealDto>,
+        val summary: DaySummaryDto,
+        val targets: DiaryTargets,
+        val favorites: List<FavoriteDto>,
+    )
+
     private val mutableState = MutableStateFlow(DiaryUiState())
     val state: StateFlow<DiaryUiState> = mutableState.asStateFlow()
 
@@ -55,11 +66,17 @@ class DiaryViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(ioDispatcher) {
-                    Triple(repository.meals(day), repository.summary(day), repository.targets())
+                    LoadedDiary(
+                        meals = repository.meals(day),
+                        summary = repository.summary(day),
+                        targets = repository.targets(),
+                        favorites = repository.favorites(),
+                    )
                 }
-            }.onSuccess { (meals, summary, targets) ->
+            }.onSuccess { loaded ->
                 mutableState.update {
-                    it.copy(meals = meals, summary = summary, targets = targets, loading = false,
+                    it.copy(meals = loaded.meals, summary = loaded.summary, targets = loaded.targets,
+                        favorites = loaded.favorites, loading = false,
                         lastSync = OffsetDateTime.now().toLocalTime().withNano(0).toString())
                 }
             }.onFailure { mutableState.update { it.copy(loading = false, error = DiaryError.Network) } }
@@ -73,18 +90,39 @@ class DiaryViewModel(
 
     fun newManualEntry() {
         mutableState.update {
-            it.copy(editor = MealEditorDraft(day = it.selectedDay.toString()), error = null)
+            it.copy(
+                editor = MealEditorDraft(day = it.selectedDay.toString()),
+                favoriteEditor = null,
+                error = null,
+            )
         }
         loadPrivateFoods()
     }
 
     fun openDraft(editor: MealEditorDraft) {
-        mutableState.update { it.copy(editor = editor, error = null) }
+        mutableState.update { it.copy(editor = editor, favoriteEditor = null, error = null) }
+        loadPrivateFoods()
+    }
+
+    fun openFavoriteTemplate(favorite: FavoriteDto) {
+        mutableState.update {
+            it.copy(
+                editor = favorite.meal.toEditorDraft(),
+                favoriteEditor = favorite,
+                error = null,
+            )
+        }
         loadPrivateFoods()
     }
 
     fun edit(meal: MealDto) {
-        mutableState.update { it.copy(editor = MealEditorDraft.from(meal), error = null) }
+        mutableState.update {
+            it.copy(
+                editor = MealEditorDraft.from(meal),
+                favoriteEditor = null,
+                error = null,
+            )
+        }
         loadPrivateFoods()
     }
 
@@ -101,7 +139,13 @@ class DiaryViewModel(
     fun dismissDiscard() = mutableState.update { it.copy(confirmDiscard = false) }
 
     fun closeEditor() = mutableState.update {
-        it.copy(editor = null, templateEditor = null, confirmDiscard = false, error = null)
+        it.copy(
+            editor = null,
+            favoriteEditor = null,
+            templateEditor = null,
+            confirmDiscard = false,
+            error = null,
+        )
     }
 
     fun saveEditor() {
@@ -113,9 +157,20 @@ class DiaryViewModel(
         if (mutableState.value.saving) return
         mutableState.update { it.copy(saving = true, error = null) }
         viewModelScope.launch {
-            runCatching { withContext(ioDispatcher) { repository.save(payload, editor.mealId) } }
+            val favorite = mutableState.value.favoriteEditor
+            runCatching {
+                withContext(ioDispatcher) {
+                    if (favorite == null) {
+                        repository.save(payload, editor.mealId)
+                    } else {
+                        repository.updateFavorite(favorite.id, favorite.displayName, payload)
+                    }
+                }
+            }
                 .onSuccess {
-                    mutableState.update { state -> state.copy(editor = null, saving = false) }
+                    mutableState.update { state ->
+                        state.copy(editor = null, favoriteEditor = null, saving = false)
+                    }
                     refresh()
                 }
                 .onFailure { error ->
@@ -131,6 +186,23 @@ class DiaryViewModel(
     fun delete(meal: MealDto) = mutateAndRefresh { repository.delete(meal.id) }
 
     fun duplicate(meal: MealDto) = mutateAndRefresh { repository.duplicate(meal.id) }
+
+    fun toggleFavorite(meal: MealDto) {
+        val favorite = mutableState.value.favorites.firstOrNull { it.originalMealId == meal.id }
+        mutateAndRefresh {
+            if (favorite == null) repository.createFavorite(meal.id, meal.name)
+            else repository.deleteFavorite(favorite.id)
+        }
+    }
+
+    fun scaleEditor(factor: String) {
+        val editor = mutableState.value.editor ?: return
+        val scaled = runCatching { editor.scaled(factor) }.getOrElse {
+            mutableState.update { it.copy(error = DiaryError.Validation) }
+            return
+        }
+        updateEditor(scaled)
+    }
 
     fun loadPrivateFoods() {
         viewModelScope.launch {
