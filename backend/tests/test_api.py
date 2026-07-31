@@ -106,3 +106,50 @@ def test_access_code_is_one_time(tmp_path, monkeypatch):
         )
         assert response.status_code == 400
 
+
+def test_quick_manual_entry_and_private_food_isolation(tmp_path, monkeypatch):
+    from baseline_api import main
+    monkeypatch.setattr(main.settings, "database", tmp_path / "test.db")
+    create_code("manual-first-code-123456")
+    create_code("manual-second-code-123456")
+
+    with TestClient(app) as client:
+        first = register(client, "manual-first", "manual-first-code-123456")
+        second = register(client, "manual-second", "manual-second-code-123456")
+        first_headers = {"Authorization": f"Bearer {first}"}
+        second_headers = {"Authorization": f"Bearer {second}"}
+        quick = meal("quick-entry")
+        quick["ingredients"] = []
+        quick["nutrients"] = [
+            {"key": "energy", "value": "450,5", "unit": "kcal", "basis": "portion"}
+        ]
+        created = client.post("/v1/meals", json=quick, headers=first_headers)
+        assert created.status_code == 201, created.text
+        assert created.json()["ingredients"] == []
+        assert created.json()["nutrients"][0]["value"] == "450.5"
+
+        template = {
+            "name": "Haferflocken",
+            "brand": "Privat",
+            "default_amount": "100",
+            "unit": "g",
+            "basis": "100g",
+            "nutrients": [
+                {"key": "energy", "value": "370,5", "unit": "kcal", "basis": "100g"}
+            ],
+        }
+        food = client.post("/v1/private-foods", json=template, headers=first_headers)
+        assert food.status_code == 201, food.text
+        food_id = food.json()["id"]
+        assert food.json()["nutrients"][0]["locked"] is True
+        assert client.get(f"/v1/private-foods/{food_id}", headers=second_headers).status_code == 404
+        assert client.get("/v1/private-foods", headers=second_headers).json() == []
+
+        update = dict(template)
+        update["version"] = food.json()["version"]
+        update["nutrients"] = [
+            {"key": "energy", "value": "380", "unit": "kcal", "basis": "100g"}
+        ]
+        assert client.put(f"/v1/private-foods/{food_id}", json=update, headers=first_headers).status_code == 200
+        stored_meal = client.get(f"/v1/meals/{created.json()['id']}", headers=first_headers).json()
+        assert stored_meal["nutrients"][0]["value"] == "450.5"

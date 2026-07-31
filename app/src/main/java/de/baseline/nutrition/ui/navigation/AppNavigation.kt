@@ -60,7 +60,12 @@ fun NutritionNavHost(
         }
         composable<AuthenticatedRoute> {
             if (container == null) AuthenticatedScreen()
-            else AccountHomeScreen(container.authRepository, container.dispatchers.io, onSessionChanged)
+            else AccountHomeScreen(
+                container.authRepository,
+                container.diaryRepository,
+                container.dispatchers.io,
+                onSessionChanged,
+            )
         }
     }
 }

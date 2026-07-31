@@ -21,12 +21,14 @@ class ApiClient(
         method: String,
         body: Request? = null,
         authenticated: Boolean = false,
+        headers: Map<String, String> = emptyMap(),
     ): Response {
         val connection = URL(baseUrl().trimEnd('/') + path).openConnection() as HttpURLConnection
         connection.requestMethod = method
         connection.connectTimeout = 15_000
         connection.readTimeout = 20_000
         connection.setRequestProperty("Accept", "application/json")
+        headers.forEach(connection::setRequestProperty)
         if (authenticated) {
             sessionStore.readToken()?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
         }
