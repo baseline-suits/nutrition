@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import warnings
 from base64 import b64encode
 from collections import defaultdict, deque
 from contextlib import contextmanager
@@ -23,6 +24,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 UTC = UTC
@@ -58,6 +61,11 @@ UNITS = {"g", "kg", "mg", "µg", "ml", "l", "kcal", "kj", "piece", "portion"}
 BASES = {"portion", "100g", "100ml"}
 ANALYSIS_SCHEMA_VERSION = "nutrition-analysis-model-output/1.1.0"
 ANALYSIS_PROMPT_VERSION = "baseline-meal-analysis/1.0.0"
+UPLOAD_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp"}
+UPLOAD_MAX_BYTES = 15 * 1024 * 1024
+UPLOAD_MAX_PIXELS = 25_000_000
+UPLOAD_MAX_EDGE = 2048
+Image.MAX_IMAGE_PIXELS = UPLOAD_MAX_PIXELS
 
 
 def now() -> datetime:
@@ -85,6 +93,8 @@ class Settings:
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
         self.openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
         self.external_services_mode = os.environ.get("EXTERNAL_SERVICES_MODE", "live")
+        default_objects = Path(__file__).resolve().parents[1] / "private_objects"
+        self.object_store = Path(os.environ.get("BASELINE_OBJECT_STORE", default_objects))
 
 
 settings = Settings()
@@ -309,6 +319,7 @@ class MealInput(BaseModel):
     nutrients: list[NutrientInput] = Field(default_factory=list, max_length=100)
     provenance_source: str | None = None
     external_reference: str | None = Field(default=None, max_length=500)
+    attachment_id: str | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("meal_type")
     @classmethod
@@ -456,6 +467,31 @@ class AnalysisDraft(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     estimated_cost_micros: int | None = None
+    attachment_id: str | None = None
+
+
+class UploadCreate(BaseModel):
+    media_type: Literal["image/jpeg", "image/png", "image/webp"]
+    size_bytes: int = Field(gt=0, le=UPLOAD_MAX_BYTES)
+
+
+class UploadInfo(BaseModel):
+    id: str
+    status: Literal[
+        "pending_upload",
+        "uploaded",
+        "ready",
+        "analysis_attached",
+        "deleted",
+        "failed",
+    ]
+    media_type: str
+    size_bytes: int | None
+    width: int | None
+    height: int | None
+    expires_at: datetime
+    upload_path: str
+    content_path: str | None
 
 
 class AnalysisProviderError(Exception):
@@ -576,8 +612,174 @@ class ProfileInput(BaseModel):
         return value
 
 
+def object_path(key: str) -> Path:
+    root = settings.object_store.resolve()
+    path = (root / key).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        fail(500, "invalid_object_path", "Ungültiger interner Objektpfad.")
+    return path
+
+
+def remove_upload_files(object_key: str) -> None:
+    for suffix in ("", ".upload", ".tmp"):
+        path = object_path(f"{object_key}{suffix}")
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def upload_info(row: sqlite3.Row) -> UploadInfo:
+    visible = row["status"] in {"ready", "analysis_attached"}
+    return UploadInfo(
+        id=row["id"],
+        status=row["status"],
+        media_type=row["stored_media_type"] or row["declared_media_type"],
+        size_bytes=row["size_bytes"],
+        width=row["width"],
+        height=row["height"],
+        expires_at=datetime.fromisoformat(row["expires_at"]),
+        upload_path=f"/v1/uploads/{row['id']}/content",
+        content_path=f"/v1/uploads/{row['id']}/content" if visible else None,
+    )
+
+
+def load_upload(
+    connection: sqlite3.Connection,
+    user_id: str,
+    upload_id: str,
+    statuses: set[str] | None = None,
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM photo_uploads WHERE id=? AND user_id=?",
+        (upload_id, user_id),
+    ).fetchone()
+    if not row or (statuses is not None and row["status"] not in statuses):
+        fail(404, "not_found", "Foto nicht gefunden.")
+    return row
+
+
+def finalize_upload_file(row: sqlite3.Row) -> tuple[int, int, int]:
+    raw_path = object_path(f"{row['object_key']}.upload")
+    final_path = object_path(row["object_key"])
+    temporary_path = object_path(f"{row['object_key']}.tmp")
+    if not raw_path.exists():
+        fail(409, "upload_incomplete", "Der Upload ist noch nicht vollständig.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(raw_path) as probe:
+                if (probe.format or "").upper() not in {"JPEG", "PNG", "WEBP"}:
+                    raise UnidentifiedImageError("unsupported format")
+                probe.verify()
+            with Image.open(raw_path) as source:
+                image = ImageOps.exif_transpose(source)
+                if image.width * image.height > UPLOAD_MAX_PIXELS:
+                    raise Image.DecompressionBombError("image exceeds pixel limit")
+                image.thumbnail((UPLOAD_MAX_EDGE, UPLOAD_MAX_EDGE))
+                if image.mode != "RGB":
+                    background = Image.new("RGB", image.size, "white")
+                    if "A" in image.getbands():
+                        background.paste(image, mask=image.getchannel("A"))
+                    else:
+                        background.paste(image)
+                    image = background
+                final_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                image.save(temporary_path, format="JPEG", quality=88, optimize=True)
+                width, height = image.size
+        temporary_path.chmod(0o600)
+        temporary_path.replace(final_path)
+        raw_path.unlink(missing_ok=True)
+        return final_path.stat().st_size, width, height
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        UnidentifiedImageError,
+    ) as error:
+        remove_upload_files(row["object_key"])
+        raise ValueError("invalid image") from error
+
+
+def cleanup_expired_uploads() -> int:
+    migrate()
+    deleted = 0
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT * FROM photo_uploads
+               WHERE retained_at IS NULL AND deleted_at IS NULL AND expires_at<=?""",
+            (iso(now()),),
+        ).fetchall()
+        for row in rows:
+            remove_upload_files(row["object_key"])
+            connection.execute(
+                """UPDATE photo_uploads
+                   SET status='deleted',deleted_at=?,updated_at=? WHERE id=?""",
+                (iso(now()), iso(now()), row["id"]),
+            )
+            deleted += 1
+        connection.commit()
+    return deleted
+
+
 def snapshot(payload: MealInput) -> str:
     return payload.model_dump_json()
+
+
+def attach_upload(
+    connection: sqlite3.Connection,
+    user_id: str,
+    meal_id: str,
+    attachment_id: str,
+    stamp: str,
+) -> None:
+    upload = load_upload(
+        connection,
+        user_id,
+        attachment_id,
+        {"ready", "analysis_attached"},
+    )
+    connection.execute(
+        """INSERT INTO attachments
+           (id,meal_id,storage_key,media_type,created_at,upload_id)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            uid(),
+            meal_id,
+            upload["object_key"],
+            upload["stored_media_type"],
+            stamp,
+            upload["id"],
+        ),
+    )
+    connection.execute(
+        """UPDATE photo_uploads
+           SET status='analysis_attached',retained_at=?,updated_at=? WHERE id=?""",
+        (stamp, stamp, upload["id"]),
+    )
+
+
+def detach_meal_uploads(connection: sqlite3.Connection, meal_id: str) -> None:
+    upload_ids = [
+        row["upload_id"]
+        for row in connection.execute(
+            "SELECT upload_id FROM attachments WHERE meal_id=? AND upload_id IS NOT NULL",
+            (meal_id,),
+        )
+    ]
+    connection.execute("DELETE FROM attachments WHERE meal_id=?", (meal_id,))
+    for upload_id in upload_ids:
+        other_reference = connection.execute(
+            "SELECT 1 FROM attachments WHERE upload_id=? LIMIT 1", (upload_id,)
+        ).fetchone()
+        if not other_reference:
+            connection.execute(
+                """UPDATE photo_uploads
+                   SET retained_at=NULL,expires_at=?,updated_at=? WHERE id=?""",
+                (iso(now() + timedelta(hours=1)), iso(now()), upload_id),
+            )
 
 
 def insert_meal(
@@ -658,6 +860,8 @@ def insert_meal(
             "INSERT INTO provenance VALUES (?,?,?,?,?)",
             (uid(), meal_id, payload.provenance_source, payload.external_reference, stamp),
         )
+    if payload.attachment_id:
+        attach_upload(connection, user_id, meal_id, payload.attachment_id, stamp)
     connection.execute(
         "INSERT INTO meal_revisions VALUES (?,?,?,?,?)",
         (uid(), meal_id, 1, snapshot(payload), stamp),
@@ -758,6 +962,16 @@ def load_meals(
     for row in provenance_rows:
         provenance.setdefault(row["meal_id"], row)
 
+    attachment_rows = connection.execute(
+        f"""SELECT meal_id,upload_id FROM attachments
+            WHERE meal_id IN ({visible_placeholders}) AND upload_id IS NOT NULL
+            ORDER BY created_at""",
+        visible_ids,
+    ).fetchall()
+    attachments: dict[str, str] = {}
+    for row in attachment_rows:
+        attachments.setdefault(row["meal_id"], row["upload_id"])
+
     output: list[MealOutput] = []
     for meal_id in visible_ids:
         meal = meal_by_id[meal_id]
@@ -783,6 +997,7 @@ def load_meals(
                 totals=decimal_totals(all_nutrients),
                 provenance_source=source["source"] if source else None,
                 external_reference=source["external_reference"] if source else None,
+                attachment_id=attachments.get(meal_id),
                 version=meal["version"],
                 created_at=datetime.fromisoformat(meal["created_at"]),
                 updated_at=datetime.fromisoformat(meal["updated_at"]),
@@ -1018,6 +1233,189 @@ def get_profile(user: Annotated[UserContext, Depends(current_user)]):
     if not profile or not profile["target_kcal"]:
         fail(404, "not_found", "Profil nicht gefunden.")
     return dict(profile)
+
+
+@app.post("/v1/uploads", response_model=UploadInfo, status_code=201)
+def create_upload(
+    payload: UploadCreate,
+    user: Annotated[UserContext, Depends(current_user)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+):
+    if not 8 <= len(idempotency_key) <= 200:
+        fail(422, "invalid_idempotency_key", "Ungültiger Idempotenzschlüssel.")
+    stamp = iso(now())
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            """SELECT * FROM photo_uploads
+               WHERE user_id=? AND idempotency_key=?""",
+            (user.id, idempotency_key),
+        ).fetchone()
+        if existing:
+            if (
+                existing["declared_media_type"] != payload.media_type
+                or existing["declared_size"] != payload.size_bytes
+            ):
+                fail(
+                    409,
+                    "idempotency_conflict",
+                    "Der Idempotenzschlüssel wurde bereits anders verwendet.",
+                )
+            return upload_info(existing)
+        active = connection.execute(
+            """SELECT COUNT(*) count FROM photo_uploads
+               WHERE user_id=? AND status IN ('pending_upload','uploaded')""",
+            (user.id,),
+        ).fetchone()["count"]
+        if active >= 10:
+            fail(429, "too_many_uploads", "Zu viele gleichzeitige Uploads.")
+        upload_id = uid()
+        object_id = uuid.uuid4().hex
+        object_key = f"{object_id[:2]}/{object_id}.jpg"
+        connection.execute(
+            """INSERT INTO photo_uploads (
+               id,user_id,idempotency_key,object_key,status,declared_media_type,
+               declared_size,expires_at,created_at,updated_at
+               ) VALUES (?,?,?,?,'pending_upload',?,?,?,?,?)""",
+            (
+                upload_id,
+                user.id,
+                idempotency_key,
+                object_key,
+                payload.media_type,
+                payload.size_bytes,
+                iso(now() + timedelta(hours=1)),
+                stamp,
+                stamp,
+            ),
+        )
+        connection.commit()
+        return upload_info(load_upload(connection, user.id, upload_id))
+
+
+@app.get("/v1/uploads/{upload_id}", response_model=UploadInfo)
+def get_upload(upload_id: str, user: Annotated[UserContext, Depends(current_user)]):
+    with db() as connection:
+        return upload_info(load_upload(connection, user.id, upload_id))
+
+
+@app.put("/v1/uploads/{upload_id}/content", response_model=UploadInfo)
+async def upload_content(
+    upload_id: str,
+    request: Request,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    with db() as connection:
+        row = load_upload(connection, user.id, upload_id, {"pending_upload", "uploaded"})
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    if media_type != row["declared_media_type"] or media_type not in UPLOAD_MEDIA_TYPES:
+        fail(415, "invalid_media_type", "Der Bildtyp stimmt nicht mit dem Upload überein.")
+
+    raw_path = object_path(f"{row['object_key']}.upload")
+    raw_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    total = 0
+    try:
+        with raw_path.open("wb") as output:
+            raw_path.chmod(0o600)
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > UPLOAD_MAX_BYTES or total > row["declared_size"]:
+                    raise ValueError("upload too large")
+                output.write(chunk)
+        if total != row["declared_size"]:
+            raise ValueError("upload size mismatch")
+    except ValueError:
+        raw_path.unlink(missing_ok=True)
+        fail(413, "invalid_upload_size", "Die Bildgröße stimmt nicht mit dem Upload überein.")
+
+    with db() as connection:
+        connection.execute(
+            """UPDATE photo_uploads
+               SET status='uploaded',size_bytes=?,updated_at=?
+               WHERE id=? AND user_id=?""",
+            (total, iso(now()), upload_id, user.id),
+        )
+        connection.commit()
+        return upload_info(load_upload(connection, user.id, upload_id))
+
+
+@app.post("/v1/uploads/{upload_id}/finalize", response_model=UploadInfo)
+def finalize_upload(upload_id: str, user: Annotated[UserContext, Depends(current_user)]):
+    with db() as connection:
+        row = load_upload(connection, user.id, upload_id)
+        if row["status"] in {"ready", "analysis_attached"}:
+            return upload_info(row)
+        if row["status"] != "uploaded":
+            fail(409, "upload_incomplete", "Der Upload ist noch nicht vollständig.")
+    try:
+        size_bytes, width, height = finalize_upload_file(row)
+    except ValueError:
+        with db() as connection:
+            connection.execute(
+                """UPDATE photo_uploads SET status='failed',expires_at=?,updated_at=?
+                   WHERE id=? AND user_id=?""",
+                (iso(now()), iso(now()), upload_id, user.id),
+            )
+            connection.commit()
+        fail(422, "invalid_image", "Die Datei ist kein unterstütztes, sicheres Bild.")
+    with db() as connection:
+        connection.execute(
+            """UPDATE photo_uploads
+               SET status='ready',stored_media_type='image/jpeg',size_bytes=?,
+                   width=?,height=?,expires_at=?,updated_at=?
+               WHERE id=? AND user_id=?""",
+            (
+                size_bytes,
+                width,
+                height,
+                iso(now() + timedelta(hours=24)),
+                iso(now()),
+                upload_id,
+                user.id,
+            ),
+        )
+        connection.commit()
+        return upload_info(load_upload(connection, user.id, upload_id))
+
+
+@app.get("/v1/uploads/{upload_id}/content")
+def download_upload(upload_id: str, user: Annotated[UserContext, Depends(current_user)]):
+    with db() as connection:
+        row = load_upload(connection, user.id, upload_id, {"ready", "analysis_attached"})
+    path = object_path(row["object_key"])
+    if not path.is_file():
+        fail(404, "not_found", "Foto nicht gefunden.")
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        filename="meal-photo.jpg",
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.delete("/v1/uploads/{upload_id}", status_code=204)
+def delete_upload(upload_id: str, user: Annotated[UserContext, Depends(current_user)]):
+    with db() as connection:
+        row = connection.execute(
+            "SELECT * FROM photo_uploads WHERE id=? AND user_id=?",
+            (upload_id, user.id),
+        ).fetchone()
+        if not row or row["status"] == "deleted":
+            return
+        remove_upload_files(row["object_key"])
+        connection.execute("DELETE FROM attachments WHERE upload_id=?", (upload_id,))
+        stamp = iso(now())
+        connection.execute(
+            """UPDATE photo_uploads
+               SET status='deleted',deleted_at=?,retained_at=NULL,updated_at=?
+               WHERE id=? AND user_id=?""",
+            (stamp, stamp, upload_id, user.id),
+        )
+        connection.commit()
 
 
 @app.post("/v1/private-foods", response_model=PrivateFoodOutput, status_code=201)
@@ -1270,6 +1668,29 @@ def update_meal(
                         nutrient.accuracy,
                     ),
                 )
+        if payload.provenance_source:
+            if payload.provenance_source not in SOURCES:
+                fail(422, "validation_error", "Unbekannte Herkunft.", "provenance_source")
+            connection.execute(
+                "INSERT INTO provenance VALUES (?,?,?,?,?)",
+                (
+                    uid(),
+                    meal_id,
+                    payload.provenance_source,
+                    payload.external_reference,
+                    stamp,
+                ),
+            )
+        current_attachment = connection.execute(
+            """SELECT upload_id FROM attachments
+               WHERE meal_id=? AND upload_id IS NOT NULL ORDER BY created_at LIMIT 1""",
+            (meal_id,),
+        ).fetchone()
+        current_attachment_id = current_attachment["upload_id"] if current_attachment else None
+        if current_attachment_id != payload.attachment_id:
+            detach_meal_uploads(connection, meal_id)
+            if payload.attachment_id:
+                attach_upload(connection, user.id, meal_id, payload.attachment_id, stamp)
         connection.execute(
             "INSERT INTO meal_revisions VALUES (?,?,?,?,?)",
             (uid(), meal_id, next_version, snapshot(payload), stamp),
@@ -1384,6 +1805,8 @@ def analyze_meal(
             ensure_ascii=False,
         )
     )
+    image_bytes: bytes | None = None
+    image_media_type: str | None = None
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
@@ -1405,18 +1828,24 @@ def analyze_meal(
             fail(409, "analysis_failed", "Die Analyse ist fehlgeschlagen. Bitte neu starten.")
 
         if payload.attachment_id:
-            fail(
-                409,
-                "photo_not_ready",
-                "Das Foto muss vor der Analyse vollständig hochgeladen werden.",
+            upload = load_upload(
+                connection,
+                user.id,
+                payload.attachment_id,
+                {"ready", "analysis_attached"},
             )
+            image_path = object_path(upload["object_key"])
+            if not image_path.is_file():
+                fail(404, "not_found", "Foto nicht gefunden.")
+            image_bytes = image_path.read_bytes()
+            image_media_type = upload["stored_media_type"]
         analysis_id = uid()
         stamp = iso(now())
         connection.execute(
             """INSERT INTO analysis_requests (
                id,user_id,idempotency_key,input_hash,input_kind,status,model_name,
-               prompt_version,schema_version,input_chars,created_at,updated_at
-               ) VALUES (?,?,?,?,?,'processing',?,?,?,?,?,?)""",
+               prompt_version,schema_version,input_chars,created_at,updated_at,attachment_id
+               ) VALUES (?,?,?,?,?,'processing',?,?,?,?,?,?,?)""",
             (
                 analysis_id,
                 user.id,
@@ -1429,6 +1858,7 @@ def analyze_meal(
                 len(payload.text or ""),
                 stamp,
                 stamp,
+                payload.attachment_id,
             ),
         )
         connection.commit()
@@ -1439,6 +1869,8 @@ def analyze_meal(
             payload.text,
             payload.locale,
             payload.meal_type,
+            image_bytes,
+            image_media_type,
         )
         meal = AnalysisMeal.model_validate(raw_meal)
         draft = AnalysisDraft(
@@ -1450,6 +1882,7 @@ def analyze_meal(
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             estimated_cost_micros=usage.get("estimated_cost_micros"),
+            attachment_id=payload.attachment_id,
         )
     except AnalysisProviderError as error:
         latency_ms = round((time.monotonic() - started) * 1000)
@@ -1494,5 +1927,12 @@ def analyze_meal(
                 user.id,
             ),
         )
+        if payload.attachment_id:
+            connection.execute(
+                """UPDATE photo_uploads
+                   SET status='analysis_attached',updated_at=?
+                   WHERE id=? AND user_id=? AND status='ready'""",
+                (iso(now()), payload.attachment_id, user.id),
+            )
         connection.commit()
     return draft

@@ -23,16 +23,17 @@ def main_check() -> None:
         previous = root / "previous.db"
         ordered = sorted(migrations.glob("*.sql"))
         with sqlite3.connect(previous) as connection:
-            connection.executescript(ordered[0].read_text(encoding="utf-8"))
+            for migration in ordered[:-1]:
+                connection.executescript(migration.read_text(encoding="utf-8"))
             connection.execute(
                 """CREATE TABLE schema_migrations (
                    version TEXT PRIMARY KEY,
                    applied_at TEXT NOT NULL
                 )"""
             )
-            connection.execute(
+            connection.executemany(
                 "INSERT INTO schema_migrations VALUES (?, ?)",
-                (ordered[0].name, main.iso(main.now())),
+                [(migration.name, main.iso(main.now())) for migration in ordered[:-1]],
             )
             connection.commit()
         main.settings.database = previous

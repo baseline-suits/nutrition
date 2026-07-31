@@ -55,6 +55,18 @@ Die API liegt unter `http://127.0.0.1:8000`, die OpenAPI-Dokumentation unter
 Deployments kann `BASELINE_DATABASE` auf einen anderen Pfad gesetzt werden.
 Der Zugangscode wird nur beim Erzeugen im Klartext ausgegeben.
 
+Essensfotos liegen ausschließlich im privaten, nicht statisch ausgelieferten
+Objektspeicher. Der lokale Standardpfad ist `backend/private_objects`; in
+Deploymentumgebungen wird er mit `BASELINE_OBJECT_STORE` gesetzt. Der
+Webserverprozess benötigt dort Lese-/Schreibrechte, der Pfad darf nicht als
+öffentliches Verzeichnis konfiguriert werden. Temporäre und fehlgeschlagene
+Uploads werden regelmäßig entfernt:
+
+```bash
+cd backend
+python manage.py cleanup-uploads
+```
+
 Backendtests:
 
 ```bash

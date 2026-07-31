@@ -3,7 +3,7 @@ import argparse
 import secrets
 from datetime import timedelta
 
-from baseline_api.main import db, digest, iso, migrate, now, uid
+from baseline_api.main import cleanup_expired_uploads, db, digest, iso, migrate, now, uid
 
 
 def main() -> None:
@@ -11,6 +11,7 @@ def main() -> None:
     subcommands = parser.add_subparsers(dest="command", required=True)
     invite = subcommands.add_parser("create-access-code")
     invite.add_argument("--hours", type=int, default=72)
+    subcommands.add_parser("cleanup-uploads")
     args = parser.parse_args()
     if args.command == "create-access-code":
         if not 1 <= args.hours <= 8760:
@@ -24,8 +25,9 @@ def main() -> None:
             )
             connection.commit()
         print(code)
+    elif args.command == "cleanup-uploads":
+        print(cleanup_expired_uploads())
 
 
 if __name__ == "__main__":
     main()
-
