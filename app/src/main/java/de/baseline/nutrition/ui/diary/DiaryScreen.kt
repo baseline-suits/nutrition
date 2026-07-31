@@ -59,12 +59,20 @@ fun DiaryScreen(
     authRepository: AuthRepository,
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
+    onQuickAdd: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     when {
         state.templateEditor != null -> TemplateEditorScreen(state, viewModel)
         state.editor != null -> MealEditorScreen(state, viewModel)
-        else -> DayScreen(state, viewModel, authRepository, ioDispatcher, onLoggedOut)
+        else -> DayScreen(
+            state,
+            viewModel,
+            authRepository,
+            ioDispatcher,
+            onLoggedOut,
+            onQuickAdd,
+        )
     }
 }
 
@@ -75,6 +83,7 @@ private fun DayScreen(
     authRepository: AuthRepository,
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
+    onQuickAdd: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
@@ -111,7 +120,7 @@ private fun DayScreen(
             if (state.meals.isEmpty()) {
                 Text(stringResource(R.string.empty_day_title), fontWeight = FontWeight.Bold)
                 Text(stringResource(R.string.empty_day_description))
-                Button(onClick = viewModel::newManualEntry) { Text(stringResource(R.string.manual_entry)) }
+                Button(onClick = onQuickAdd) { Text(stringResource(R.string.add_meal_title)) }
             } else {
                 mealTypes.forEach { type ->
                     val meals = state.meals.filter { it.mealType == type }
@@ -127,7 +136,7 @@ private fun DayScreen(
                         }
                     }
                 }
-                Button(onClick = viewModel::newManualEntry) { Text(stringResource(R.string.manual_entry)) }
+                Button(onClick = onQuickAdd) { Text(stringResource(R.string.add_meal_title)) }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
@@ -230,6 +239,14 @@ private fun MealEditorScreen(state: DiaryUiState, viewModel: DiaryViewModel) {
     ) {
         TextButton(onClick = viewModel::requestCloseEditor) { Text(stringResource(R.string.back)) }
         Text(stringResource(if (editor.mealId == null) R.string.new_meal else R.string.edit_meal), fontWeight = FontWeight.Bold)
+        if (editor.analysisWarnings.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(BaselineSpacing.medium)) {
+                    Text(stringResource(R.string.analysis_warnings), fontWeight = FontWeight.Bold)
+                    editor.analysisWarnings.forEach { Text("• $it") }
+                }
+            }
+        }
         Field(editor.name, { viewModel.updateEditor(editor.copy(name = it)) }, R.string.meal_name)
         Text(stringResource(R.string.meal_type))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {

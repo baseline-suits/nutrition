@@ -90,8 +90,10 @@ def test_private_upload_analysis_binding_and_deletion(tmp_path, monkeypatch):
     monkeypatch.setattr(main.settings, "database", tmp_path / "uploads.db")
     monkeypatch.setattr(main.settings, "object_store", tmp_path / "objects")
     provider_images: list[bytes | None] = []
+    provider_texts: list[str | None] = []
 
     def provider(text, locale, meal_type, image_bytes=None, image_media_type=None):
+        provider_texts.append(text)
         provider_images.append(image_bytes)
         return model_result(), {
             "prompt_tokens": 20,
@@ -123,12 +125,18 @@ def test_private_upload_analysis_binding_and_deletion(tmp_path, monkeypatch):
 
         analysis = client.post(
             "/v1/analysis",
-            json={"attachment_id": upload_id, "locale": "de", "meal_type": "lunch"},
+            json={
+                "attachment_id": upload_id,
+                "text": "Kartoffeln, vermutlich ohne Sauce",
+                "locale": "de",
+                "meal_type": "lunch",
+            },
             headers=auth(first, "photo-analysis-1"),
         )
         assert analysis.status_code == 201, analysis.text
         assert analysis.json()["attachment_id"] == upload_id
         assert provider_images and provider_images[0]
+        assert provider_texts == ["Kartoffeln, vermutlich ohne Sauce"]
 
         meal = {
             "client_id": "photo-meal-1",

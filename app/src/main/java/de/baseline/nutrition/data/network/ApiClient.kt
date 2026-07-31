@@ -54,4 +54,44 @@ class ApiClient(
         }
         return json.decodeFromString(content)
     }
+
+    inline fun <reified Response> upload(
+        path: String,
+        bytes: ByteArray,
+        mediaType: String,
+        noinline onProgress: (Int) -> Unit = {},
+    ): Response {
+        val connection = URL(baseUrl().trimEnd('/') + path).openConnection() as HttpURLConnection
+        connection.requestMethod = "PUT"
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 30_000
+        connection.doOutput = true
+        connection.setFixedLengthStreamingMode(bytes.size)
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Content-Type", mediaType)
+        sessionStore.readToken()?.let {
+            connection.setRequestProperty("Authorization", "Bearer $it")
+        }
+        connection.outputStream.use { output ->
+            var offset = 0
+            while (offset < bytes.size) {
+                val count = minOf(64 * 1024, bytes.size - offset)
+                output.write(bytes, offset, count)
+                offset += count
+                onProgress((offset * 100L / bytes.size).toInt())
+            }
+        }
+        val status = connection.responseCode
+        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        val content = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        if (status !in 200..299) {
+            if (status == 401) sessionStore.clear()
+            val code = runCatching {
+                (json.parseToJsonElement(content).jsonObject["detail"] as? JsonObject)
+                    ?.get("code")?.toString()?.trim('"')
+            }.getOrNull() ?: "network_error"
+            throw ApiException(status, code)
+        }
+        return json.decodeFromString(content)
+    }
 }

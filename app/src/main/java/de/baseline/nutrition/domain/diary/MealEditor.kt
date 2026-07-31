@@ -109,6 +109,10 @@ data class MealEditorDraft(
     val note: String = "",
     val nutrients: NutrientFields = NutrientFields(),
     val ingredients: List<IngredientDraft> = emptyList(),
+    val captureMethod: String = "manual",
+    val provenanceSource: String = "user",
+    val attachmentId: String? = null,
+    val analysisWarnings: List<String> = emptyList(),
     val dirty: Boolean = false,
 ) {
     fun totals(): Map<String, BigDecimal?> = nutrientKeys.associateWith { key ->
@@ -146,6 +150,9 @@ data class MealEditorDraft(
             note = note.trim().ifBlank { null },
             ingredients = ingredientDtos,
             nutrients = directNutrients,
+            captureMethod = captureMethod,
+            provenanceSource = provenanceSource,
+            attachmentId = attachmentId,
             version = version,
         )
     }
@@ -173,6 +180,9 @@ data class MealEditorDraft(
                         nutrients = ingredient.nutrients.toFields(),
                     )
                 },
+                captureMethod = meal.captureMethod,
+                provenanceSource = meal.provenanceSource ?: "user",
+                attachmentId = meal.attachmentId,
             )
         }
     }

@@ -78,6 +78,11 @@ class DiaryViewModel(
         loadPrivateFoods()
     }
 
+    fun openDraft(editor: MealEditorDraft) {
+        mutableState.update { it.copy(editor = editor, error = null) }
+        loadPrivateFoods()
+    }
+
     fun edit(meal: MealDto) {
         mutableState.update { it.copy(editor = MealEditorDraft.from(meal), error = null) }
         loadPrivateFoods()

@@ -68,6 +68,7 @@ fun NutritionNavHost(
             else AccountHomeScreen(
                 container.authRepository,
                 container.diaryRepository,
+                container.captureRepository,
                 container.dispatchers.io,
                 onSessionChanged,
             )

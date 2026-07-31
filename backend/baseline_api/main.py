@@ -423,9 +423,9 @@ class AnalysisRequest(BaseModel):
     meal_type: Literal["breakfast", "lunch", "dinner", "snack", "other"] | None = None
 
     @model_validator(mode="after")
-    def exactly_one_input(self):
-        if bool(self.text) == bool(self.attachment_id):
-            raise ValueError("Genau eine Text- oder Fotoeingabe ist erforderlich")
+    def input_present(self):
+        if not self.text and not self.attachment_id:
+            raise ValueError("Eine Text- oder Fotoeingabe ist erforderlich")
         return self
 
 
@@ -1792,12 +1792,12 @@ def analyze_meal(
         fail(422, "invalid_idempotency_key", "Ungültiger Idempotenzschlüssel.")
     analysis_limit.check(user.id)
 
-    input_kind = "text" if payload.text else "photo"
-    input_reference = payload.text or payload.attachment_id or ""
+    input_kind = "photo" if payload.attachment_id else "text"
     input_hash = digest(
         json.dumps(
             {
-                "input": input_reference,
+                "text": payload.text,
+                "attachment_id": payload.attachment_id,
                 "locale": payload.locale,
                 "meal_type": payload.meal_type,
             },

@@ -6,6 +6,7 @@ import de.baseline.nutrition.core.config.BuildEnvironment
 import de.baseline.nutrition.core.coroutines.DefaultDispatcherProvider
 import de.baseline.nutrition.core.coroutines.DispatcherProvider
 import de.baseline.nutrition.data.auth.HttpAuthRepository
+import de.baseline.nutrition.data.capture.CaptureRepository
 import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.network.ApiClient
 import de.baseline.nutrition.data.network.ServerSettingsStore
@@ -32,4 +33,5 @@ class AppContainer(
     val profileRepository = ProfileRepository(api)
     val onboardingDraftStore = OnboardingDraftStore(sessionStore)
     val diaryRepository = DiaryRepository(api)
+    val captureRepository = CaptureRepository(api)
 }
