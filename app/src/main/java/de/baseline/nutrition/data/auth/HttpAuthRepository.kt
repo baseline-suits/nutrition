@@ -18,6 +18,7 @@ import kotlinx.serialization.Serializable
 @Serializable private data class SessionResponse(
     val token: String,
     @SerialName("onboarding_complete") val onboardingComplete: Boolean,
+    @SerialName("user_id") val userId: String,
 )
 @Serializable private data class SessionCheck(
     @SerialName("onboarding_complete") val onboardingComplete: Boolean,
@@ -47,14 +48,14 @@ class HttpAuthRepository(
         val response = api.request<Credentials, SessionResponse>(
             "/v1/auth/login", "POST", Credentials(username.trim(), password),
         )
-        store.writeToken(response.token)
+        store.writeSession(response.token, response.userId)
     }
 
     override suspend fun register(accessCode: String, username: String, password: String, locale: String) {
         val response = api.request<Registration, SessionResponse>(
             "/v1/auth/register", "POST", Registration(accessCode.trim(), username.trim(), password, locale),
         )
-        store.writeToken(response.token)
+        store.writeSession(response.token, response.userId)
     }
 
     override suspend fun logout(allDevices: Boolean) {

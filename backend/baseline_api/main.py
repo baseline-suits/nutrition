@@ -13,11 +13,12 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 UTC = timezone.utc
 PASSWORDS = PasswordHasher()
@@ -73,9 +74,22 @@ def db():
 def migrate() -> None:
     settings.database.parent.mkdir(parents=True, exist_ok=True)
     with db() as connection:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+               version TEXT PRIMARY KEY,
+               applied_at TEXT NOT NULL
+            )"""
+        )
         migrations = Path(__file__).resolve().parents[1] / "migrations"
         for migration in sorted(migrations.glob("*.sql")):
+            if connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ?", (migration.name,)
+            ).fetchone():
+                continue
             connection.executescript(migration.read_text(encoding="utf-8"))
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (?, ?)", (migration.name, iso(now()))
+            )
         connection.commit()
 
 
@@ -204,6 +218,14 @@ class NutrientInput(BaseModel):
             raise ValueError("Unbekannte Quelle")
         return value
 
+    @model_validator(mode="after")
+    def valid_nutrient_unit(self):
+        if self.key == "energy" and self.unit not in {"kcal", "kj"}:
+            raise ValueError("Energie benötigt kcal oder kj")
+        if self.key != "energy" and self.unit in {"kcal", "kj"}:
+            raise ValueError("Nährstoff benötigt eine Masseneinheit")
+        return self
+
 
 class IngredientInput(BaseModel):
     original_name: str = Field(min_length=1, max_length=200)
@@ -254,6 +276,18 @@ class MealInput(BaseModel):
             raise ValueError("Unbekannte Erfassungsart")
         return value
 
+    @model_validator(mode="after")
+    def valid_local_day(self):
+        if self.eaten_at.tzinfo is None:
+            raise ValueError("eaten_at benötigt eine Zeitzone")
+        try:
+            zone = ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Unbekannte Zeitzone") from error
+        if self.eaten_at.astimezone(zone).date() != self.local_day:
+            raise ValueError("local_day passt nicht zu eaten_at und timezone")
+        return self
+
 
 class MealUpdate(MealInput):
     version: int = Field(ge=1)
@@ -272,6 +306,7 @@ class MealOutput(MealInput):
     id: str
     version: int
     ingredients: list[IngredientOutput]
+    totals: dict[str, str]
     created_at: datetime
     updated_at: datetime
 
@@ -313,6 +348,7 @@ class DaySummary(BaseModel):
     totals: dict[str, str]
     available: list[str]
     missing_core: list[str]
+    coverage: dict[str, int]
     meal_count: int
 
 
@@ -331,6 +367,15 @@ class ProfileInput(BaseModel):
     target_fat_g: Decimal = Field(ge=0, le=500)
     manual: bool
     calculation: dict | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def known_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Unbekannte Zeitzone") from error
+        return value
 
 
 def snapshot(payload: MealInput) -> str:
@@ -351,7 +396,8 @@ def insert_meal(connection: sqlite3.Connection, user_id: str, payload: MealInput
         connection.execute(
             "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
             (uid(), meal_id, None, nutrient.key, str(nutrient.value), nutrient.unit,
-             nutrient.basis, nutrient.source, int(nutrient.locked or nutrient.source == "user"), nutrient.accuracy),
+             nutrient.basis, nutrient.source,
+             int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}), nutrient.accuracy),
         )
     for position, ingredient in enumerate(payload.ingredients):
         ingredient_id = uid()
@@ -364,7 +410,8 @@ def insert_meal(connection: sqlite3.Connection, user_id: str, payload: MealInput
             connection.execute(
                 "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (uid(), meal_id, ingredient_id, nutrient.key, str(nutrient.value), nutrient.unit,
-                 nutrient.basis, nutrient.source, int(nutrient.locked or nutrient.source == "user"), nutrient.accuracy),
+                 nutrient.basis, nutrient.source,
+                 int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}), nutrient.accuracy),
             )
     if payload.provenance_source:
         if payload.provenance_source not in SOURCES:
@@ -379,54 +426,141 @@ def insert_meal(connection: sqlite3.Connection, user_id: str, payload: MealInput
     return meal_id
 
 
-def load_meal(connection: sqlite3.Connection, user_id: str, meal_id: str) -> MealOutput:
-    meal = connection.execute(
-        "SELECT * FROM meals WHERE id=? AND user_id=? AND deleted_at IS NULL", (meal_id, user_id)
-    ).fetchone()
-    if not meal:
-        fail(404, "not_found", "Mahlzeit nicht gefunden.")
-    ingredients = []
-    rows = connection.execute(
-        """SELECT i.*, n.id nutrient_id,n.nutrient_key,n.value nutrient_value,n.unit nutrient_unit,
-           n.basis,n.source,n.locked,n.accuracy
-           FROM ingredients i LEFT JOIN nutrient_values n ON n.ingredient_id=i.id
-           WHERE i.meal_id=? ORDER BY i.position,n.nutrient_key""", (meal_id,)
+def decimal_totals(nutrients: list[NutrientOutput]) -> dict[str, str]:
+    totals: dict[str, Decimal] = defaultdict(Decimal)
+    for nutrient in nutrients:
+        if nutrient.basis == "portion":
+            totals[nutrient.key] += nutrient.value
+    return {
+        key: str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        for key, value in sorted(totals.items())
+    }
+
+
+def load_meals(
+    connection: sqlite3.Connection, user_id: str, meal_ids: list[str]
+) -> list[MealOutput]:
+    if not meal_ids:
+        return []
+    placeholders = ",".join("?" for _ in meal_ids)
+    meals = connection.execute(
+        f"""SELECT * FROM meals
+            WHERE user_id=? AND deleted_at IS NULL AND id IN ({placeholders})""",
+        (user_id, *meal_ids),
     ).fetchall()
-    grouped: dict[str, dict] = {}
-    for row in rows:
+    meal_by_id = {row["id"]: row for row in meals}
+    visible_ids = [meal_id for meal_id in meal_ids if meal_id in meal_by_id]
+    if not visible_ids:
+        return []
+    visible_placeholders = ",".join("?" for _ in visible_ids)
+
+    ingredient_rows = connection.execute(
+        f"""SELECT i.*, n.id nutrient_id,n.nutrient_key,n.value nutrient_value,
+            n.unit nutrient_unit,n.basis,n.source,n.locked,n.accuracy
+            FROM ingredients i LEFT JOIN nutrient_values n ON n.ingredient_id=i.id
+            WHERE i.meal_id IN ({visible_placeholders})
+            ORDER BY i.meal_id,i.position,n.nutrient_key""",
+        visible_ids,
+    ).fetchall()
+    ingredients: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in ingredient_rows:
+        grouped = ingredients[row["meal_id"]]
         if row["id"] not in grouped:
             grouped[row["id"]] = {
-                "id": row["id"], "original_name": row["original_name"],
-                "normalized_name": row["normalized_name"], "preparation": row["preparation"],
-                "amount": Decimal(row["amount"]), "unit": row["unit"], "nutrients": [],
+                "id": row["id"],
+                "original_name": row["original_name"],
+                "normalized_name": row["normalized_name"],
+                "preparation": row["preparation"],
+                "amount": Decimal(row["amount"]),
+                "unit": row["unit"],
+                "nutrients": [],
             }
         if row["nutrient_id"]:
-            grouped[row["id"]]["nutrients"].append(NutrientOutput(
-                id=row["nutrient_id"], key=row["nutrient_key"], value=Decimal(row["nutrient_value"]),
-                unit=row["nutrient_unit"], basis=row["basis"], source=row["source"],
-                locked=bool(row["locked"]), accuracy=row["accuracy"],
-            ))
-    provenance = connection.execute(
-        "SELECT source,external_reference FROM provenance WHERE meal_id=? ORDER BY created_at DESC LIMIT 1", (meal_id,)
-    ).fetchone()
-    meal_nutrients = connection.execute(
-        """SELECT * FROM nutrient_values WHERE meal_id=? AND ingredient_id IS NULL
-           ORDER BY nutrient_key""", (meal_id,)
+            grouped[row["id"]]["nutrients"].append(
+                NutrientOutput(
+                    id=row["nutrient_id"],
+                    key=row["nutrient_key"],
+                    value=Decimal(row["nutrient_value"]),
+                    unit=row["nutrient_unit"],
+                    basis=row["basis"],
+                    source=row["source"],
+                    locked=bool(row["locked"]),
+                    accuracy=row["accuracy"],
+                )
+            )
+
+    direct_rows = connection.execute(
+        f"""SELECT * FROM nutrient_values
+            WHERE ingredient_id IS NULL AND meal_id IN ({visible_placeholders})
+            ORDER BY meal_id,nutrient_key""",
+        visible_ids,
     ).fetchall()
-    return MealOutput(
-        id=meal["id"], client_id=meal["client_id"], local_day=date.fromisoformat(meal["local_day"]),
-        eaten_at=datetime.fromisoformat(meal["eaten_at"]), timezone=meal["timezone"], meal_type=meal["meal_type"],
-        name=meal["name"], note=meal["note"], capture_method=meal["capture_method"],
-        ingredients=[IngredientOutput(**value) for value in grouped.values()],
-        nutrients=[NutrientOutput(
-            id=row["id"], key=row["nutrient_key"], value=Decimal(row["value"]), unit=row["unit"],
-            basis=row["basis"], source=row["source"], locked=bool(row["locked"]), accuracy=row["accuracy"],
-        ) for row in meal_nutrients],
-        provenance_source=provenance["source"] if provenance else None,
-        external_reference=provenance["external_reference"] if provenance else None,
-        version=meal["version"], created_at=datetime.fromisoformat(meal["created_at"]),
-        updated_at=datetime.fromisoformat(meal["updated_at"]),
-    )
+    direct_nutrients: dict[str, list[NutrientOutput]] = defaultdict(list)
+    for row in direct_rows:
+        direct_nutrients[row["meal_id"]].append(
+            NutrientOutput(
+                id=row["id"],
+                key=row["nutrient_key"],
+                value=Decimal(row["value"]),
+                unit=row["unit"],
+                basis=row["basis"],
+                source=row["source"],
+                locked=bool(row["locked"]),
+                accuracy=row["accuracy"],
+            )
+        )
+
+    provenance_rows = connection.execute(
+        f"""SELECT meal_id,source,external_reference FROM provenance
+            WHERE meal_id IN ({visible_placeholders}) ORDER BY created_at DESC""",
+        visible_ids,
+    ).fetchall()
+    provenance: dict[str, sqlite3.Row] = {}
+    for row in provenance_rows:
+        provenance.setdefault(row["meal_id"], row)
+
+    output: list[MealOutput] = []
+    for meal_id in visible_ids:
+        meal = meal_by_id[meal_id]
+        ingredient_outputs = [
+            IngredientOutput(**value) for value in ingredients[meal_id].values()
+        ]
+        meal_nutrients = direct_nutrients[meal_id]
+        all_nutrients = meal_nutrients + [
+            nutrient
+            for ingredient in ingredient_outputs
+            for nutrient in ingredient.nutrients
+        ]
+        source = provenance.get(meal_id)
+        output.append(
+            MealOutput(
+                id=meal["id"],
+                client_id=meal["client_id"],
+                local_day=date.fromisoformat(meal["local_day"]),
+                eaten_at=datetime.fromisoformat(meal["eaten_at"]),
+                timezone=meal["timezone"],
+                meal_type=meal["meal_type"],
+                name=meal["name"],
+                note=meal["note"],
+                capture_method=meal["capture_method"],
+                ingredients=ingredient_outputs,
+                nutrients=meal_nutrients,
+                totals=decimal_totals(all_nutrients),
+                provenance_source=source["source"] if source else None,
+                external_reference=source["external_reference"] if source else None,
+                version=meal["version"],
+                created_at=datetime.fromisoformat(meal["created_at"]),
+                updated_at=datetime.fromisoformat(meal["updated_at"]),
+            )
+        )
+    return output
+
+
+def load_meal(connection: sqlite3.Connection, user_id: str, meal_id: str) -> MealOutput:
+    meals = load_meals(connection, user_id, [meal_id])
+    if not meals:
+        fail(404, "not_found", "Mahlzeit nicht gefunden.")
+    return meals[0]
 
 
 def load_private_food(connection: sqlite3.Connection, user_id: str, food_id: str) -> PrivateFoodOutput:
@@ -685,9 +819,17 @@ def create_meal(payload: MealInput, user: Annotated[UserContext, Depends(current
         if existing:
             return load_meal(connection, user.id, existing["id"])
         try:
-            connection.execute("BEGIN")
+            connection.execute("BEGIN IMMEDIATE")
             meal_id = insert_meal(connection, user.id, payload)
             connection.commit()
+        except sqlite3.IntegrityError:
+            connection.rollback()
+            existing = connection.execute(
+                "SELECT id FROM meals WHERE user_id=? AND client_id=?", (user.id, client_id)
+            ).fetchone()
+            if existing:
+                return load_meal(connection, user.id, existing["id"])
+            raise
         except Exception:
             connection.rollback()
             raise
@@ -726,7 +868,8 @@ def update_meal(meal_id: str, payload: MealUpdate, user: Annotated[UserContext, 
             connection.execute(
                 "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (uid(), meal_id, None, nutrient.key, str(nutrient.value), nutrient.unit,
-                 nutrient.basis, nutrient.source, int(nutrient.locked or nutrient.source == "user"),
+                 nutrient.basis, nutrient.source,
+                 int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
                  nutrient.accuracy),
             )
         for position, ingredient in enumerate(payload.ingredients):
@@ -740,7 +883,8 @@ def update_meal(meal_id: str, payload: MealUpdate, user: Annotated[UserContext, 
                 connection.execute(
                     "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (uid(), meal_id, ingredient_id, nutrient.key, str(nutrient.value), nutrient.unit,
-                     nutrient.basis, nutrient.source, int(nutrient.locked or nutrient.source == "user"),
+                     nutrient.basis, nutrient.source,
+                     int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
                      nutrient.accuracy),
                 )
         connection.execute(
@@ -770,14 +914,14 @@ def list_meals(local_day: date, user: Annotated[UserContext, Depends(current_use
                ORDER BY eaten_at,meal_type,id LIMIT ? OFFSET ?""",
             (user.id, str(local_day), limit, offset),
         ).fetchall()
-        return [load_meal(connection, user.id, row["id"]) for row in rows]
+        return load_meals(connection, user.id, [row["id"] for row in rows])
 
 
 @app.get("/v1/days/{local_day}/summary", response_model=DaySummary)
 def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
         rows = connection.execute(
-            """SELECT n.nutrient_key,n.value FROM nutrient_values n JOIN meals m ON m.id=n.meal_id
+            """SELECT n.meal_id,n.nutrient_key,n.value FROM nutrient_values n JOIN meals m ON m.id=n.meal_id
                WHERE m.user_id=? AND m.local_day=? AND m.deleted_at IS NULL AND n.basis='portion'""",
             (user.id, str(local_day)),
         ).fetchall()
@@ -786,12 +930,16 @@ def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_us
             (user.id, str(local_day)),
         ).fetchone()["count"]
     totals: dict[str, Decimal] = defaultdict(Decimal)
+    coverage: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         totals[row["nutrient_key"]] += Decimal(row["value"])
+        coverage[row["nutrient_key"]].add(row["meal_id"])
     formatted = {key: str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) for key, value in totals.items()}
     available = sorted(formatted)
     return DaySummary(local_day=local_day, totals=formatted, available=available,
-                      missing_core=sorted(CORE_NUTRIENTS - set(available)), meal_count=count)
+                      missing_core=sorted(CORE_NUTRIENTS - set(available)),
+                      coverage={key: len(meal_ids) for key, meal_ids in sorted(coverage.items())},
+                      meal_count=count)
 
 
 @app.post("/v1/meals/{meal_id}/duplicate", response_model=MealOutput, status_code=201)

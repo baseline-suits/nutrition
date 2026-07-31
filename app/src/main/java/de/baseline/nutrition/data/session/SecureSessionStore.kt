@@ -14,10 +14,20 @@ class SecureSessionStore(context: Context) {
     private val preferences = context.getSharedPreferences("secure_session", Context.MODE_PRIVATE)
     private val alias = "baseline_session_key"
 
-    fun readToken(): String? {
-        val encrypted = preferences.getString("token", null) ?: return null
+    fun readToken(): String? = readSecureString("token")
+
+    fun readUserId(): String? = readSecureString("user_id")
+
+    fun writeSession(token: String, userId: String) {
+        writeSecureString("token", token)
+        writeSecureString("user_id", userId)
+    }
+
+    fun readSecureString(name: String): String? {
+        val encrypted = preferences.getString(name, null) ?: return null
         return runCatching {
             val parts = encrypted.split(".")
+            require(parts.size == 2)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)))
             String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8)
@@ -27,14 +37,18 @@ class SecureSessionStore(context: Context) {
         }
     }
 
-    fun writeToken(token: String) {
+    fun writeSecureString(name: String, value: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        val value = listOf(cipher.iv, encrypted).joinToString(".") {
+        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        val encoded = listOf(cipher.iv, encrypted).joinToString(".") {
             Base64.encodeToString(it, Base64.NO_WRAP)
         }
-        preferences.edit().putString("token", value).apply()
+        preferences.edit().putString(name, encoded).apply()
+    }
+
+    fun removeSecureString(name: String) {
+        preferences.edit().remove(name).apply()
     }
 
     fun clear() {
@@ -55,4 +69,3 @@ class SecureSessionStore(context: Context) {
         return generator.generateKey()
     }
 }
-

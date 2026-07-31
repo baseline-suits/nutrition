@@ -56,7 +56,12 @@ fun NutritionNavHost(
         }
         composable<OnboardingRoute> {
             if (container == null) OnboardingScreen()
-            else ProfileOnboardingScreen(container.profileRepository, container.dispatchers.io, onSessionChanged)
+            else ProfileOnboardingScreen(
+                container.profileRepository,
+                container.onboardingDraftStore,
+                container.dispatchers.io,
+                onSessionChanged,
+            )
         }
         composable<AuthenticatedRoute> {
             if (container == null) AuthenticatedScreen()

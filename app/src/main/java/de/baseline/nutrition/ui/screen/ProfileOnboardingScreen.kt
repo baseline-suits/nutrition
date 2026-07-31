@@ -11,8 +11,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -21,7 +23,10 @@ import androidx.compose.ui.res.stringResource
 import de.baseline.nutrition.R
 import de.baseline.nutrition.data.profile.ProfileRepository
 import de.baseline.nutrition.data.profile.ProfileRequest
+import de.baseline.nutrition.data.profile.OnboardingDraft
+import de.baseline.nutrition.data.profile.OnboardingDraftStore
 import de.baseline.nutrition.domain.onboarding.GoalCalculator
+import de.baseline.nutrition.ui.LocaleController
 import de.baseline.nutrition.ui.theme.BaselineSpacing
 import java.time.LocalDate
 import java.time.ZoneId
@@ -32,43 +37,85 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ProfileOnboardingScreen(
     repository: ProfileRepository,
+    draftStore: OnboardingDraftStore,
     ioDispatcher: CoroutineDispatcher,
     onComplete: () -> Unit,
 ) {
-    var locale by rememberSaveable { mutableStateOf("de") }
-    var manual by rememberSaveable { mutableStateOf(false) }
-    var birthDate by rememberSaveable { mutableStateOf("1990-01-01") }
-    var height by rememberSaveable { mutableStateOf("175") }
-    var weight by rememberSaveable { mutableStateOf("70") }
-    var biologicalInput by rememberSaveable { mutableStateOf("female") }
-    var activity by rememberSaveable { mutableStateOf("sometimes") }
-    var direction by rememberSaveable { mutableStateOf("maintain") }
-    var kcal by rememberSaveable { mutableStateOf("2000") }
-    var protein by rememberSaveable { mutableStateOf("120") }
-    var carbs by rememberSaveable { mutableStateOf("220") }
-    var fat by rememberSaveable { mutableStateOf("70") }
+    val restored = remember { draftStore.load() }
+    var locale by rememberSaveable { mutableStateOf(restored.locale) }
+    var manual by rememberSaveable { mutableStateOf(restored.manual) }
+    var birthDate by rememberSaveable { mutableStateOf(restored.birthDate) }
+    var height by rememberSaveable { mutableStateOf(restored.height) }
+    var weight by rememberSaveable { mutableStateOf(restored.weight) }
+    var biologicalInput by rememberSaveable { mutableStateOf(restored.biologicalInput) }
+    var activity by rememberSaveable { mutableStateOf(restored.activity) }
+    var direction by rememberSaveable { mutableStateOf(restored.direction) }
+    var kcal by rememberSaveable { mutableStateOf(restored.kcal) }
+    var protein by rememberSaveable { mutableStateOf(restored.protein) }
+    var carbs by rememberSaveable { mutableStateOf(restored.carbs) }
+    var fat by rememberSaveable { mutableStateOf(restored.fat) }
     var error by rememberSaveable { mutableStateOf(false) }
     var saving by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    fun currentDraft() = OnboardingDraft(
+        locale = locale,
+        manual = manual,
+        birthDate = birthDate,
+        height = height,
+        weight = weight,
+        biologicalInput = biologicalInput,
+        activity = activity,
+        direction = direction,
+        kcal = kcal,
+        protein = protein,
+        carbs = carbs,
+        fat = fat,
+    )
+
+    LaunchedEffect(Unit) {
+        LocaleController.apply(locale)
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(BaselineSpacing.large),
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
         Text(stringResource(R.string.onboarding_title))
-        Choice(R.string.language, locale, listOf("de", "ru")) { locale = it }
+        Choice(R.string.language, locale, listOf("de", "ru")) {
+            locale = it
+            draftStore.save(currentDraft().copy(locale = it))
+            LocaleController.apply(it)
+        }
         Choice(R.string.goal_method, if (manual) "manual" else "calculate", listOf("calculate", "manual")) {
             manual = it == "manual"
+            draftStore.save(currentDraft().copy(manual = it == "manual"))
         }
         if (!manual) {
-            Field(R.string.birth_date, birthDate) { birthDate = it }
-            Field(R.string.height_cm, height) { height = it }
-            Field(R.string.weight_kg, weight) { weight = it }
-            Choice(R.string.biological_input, biologicalInput, listOf("female", "male")) { biologicalInput = it }
+            Field(R.string.birth_date, birthDate) {
+                birthDate = it
+                draftStore.save(currentDraft().copy(birthDate = it))
+            }
+            Field(R.string.height_cm, height) {
+                height = it
+                draftStore.save(currentDraft().copy(height = it))
+            }
+            Field(R.string.weight_kg, weight) {
+                weight = it
+                draftStore.save(currentDraft().copy(weight = it))
+            }
+            Choice(R.string.biological_input, biologicalInput, listOf("female", "male")) {
+                biologicalInput = it
+                draftStore.save(currentDraft().copy(biologicalInput = it))
+            }
             Choice(R.string.activity_level, activity, listOf("inactive", "sometimes", "active", "very_active")) {
                 activity = it
+                draftStore.save(currentDraft().copy(activity = it))
             }
-            Choice(R.string.goal_direction, direction, listOf("maintain", "deficit", "surplus")) { direction = it }
+            Choice(R.string.goal_direction, direction, listOf("maintain", "deficit", "surplus")) {
+                direction = it
+                draftStore.save(currentDraft().copy(direction = it))
+            }
             Button(onClick = {
                 runCatching {
                     GoalCalculator.calculate(
@@ -80,14 +127,34 @@ fun ProfileOnboardingScreen(
                     protein = it.proteinGrams.toString()
                     carbs = it.carbsGrams.toString()
                     fat = it.fatGrams.toString()
+                    draftStore.save(
+                        currentDraft().copy(
+                            kcal = it.targetKcal.toString(),
+                            protein = it.proteinGrams.toString(),
+                            carbs = it.carbsGrams.toString(),
+                            fat = it.fatGrams.toString(),
+                        ),
+                    )
                     error = false
                 }.onFailure { error = true }
             }) { Text(stringResource(R.string.calculate_targets)) }
         }
-        Field(R.string.target_kcal, kcal) { kcal = it }
-        Field(R.string.target_protein, protein) { protein = it }
-        Field(R.string.target_carbs, carbs) { carbs = it }
-        Field(R.string.target_fat, fat) { fat = it }
+        Field(R.string.target_kcal, kcal) {
+            kcal = it
+            draftStore.save(currentDraft().copy(kcal = it))
+        }
+        Field(R.string.target_protein, protein) {
+            protein = it
+            draftStore.save(currentDraft().copy(protein = it))
+        }
+        Field(R.string.target_carbs, carbs) {
+            carbs = it
+            draftStore.save(currentDraft().copy(carbs = it))
+        }
+        Field(R.string.target_fat, fat) {
+            fat = it
+            draftStore.save(currentDraft().copy(fat = it))
+        }
         Text(stringResource(R.string.goal_disclaimer))
         if (error) Text(stringResource(R.string.onboarding_validation_error))
         Button(enabled = !saving, onClick = {
@@ -122,7 +189,10 @@ fun ProfileOnboardingScreen(
             saving = true
             scope.launch {
                 runCatching { withContext(ioDispatcher) { repository.save(request) } }
-                    .onSuccess { onComplete() }
+                    .onSuccess {
+                        draftStore.clear()
+                        onComplete()
+                    }
                     .onFailure { error = true }
                 saving = false
             }
