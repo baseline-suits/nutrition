@@ -78,6 +78,7 @@ fun BaselineDialog(
     title: String,
     text: String,
     confirmLabel: String,
+    dismissLabel: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -89,7 +90,7 @@ fun BaselineDialog(
             TextButton(onClick = onConfirm) { Text(confirmLabel) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Abbrechen") }
+            TextButton(onClick = onDismiss) { Text(dismissLabel) }
         },
     )
 }

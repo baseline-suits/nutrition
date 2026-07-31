@@ -5,9 +5,12 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -76,7 +79,11 @@ private fun DayScreen(
     val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(BaselineSpacing.large),
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .verticalScroll(rememberScrollState())
+            .padding(BaselineSpacing.large),
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -214,7 +221,11 @@ private fun MealEditorScreen(state: DiaryUiState, viewModel: DiaryViewModel) {
     var foodQuery by rememberSaveable { mutableStateOf("") }
     BackHandler(onBack = viewModel::requestCloseEditor)
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(BaselineSpacing.large),
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .verticalScroll(rememberScrollState())
+            .padding(BaselineSpacing.large),
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
         TextButton(onClick = viewModel::requestCloseEditor) { Text(stringResource(R.string.back)) }
@@ -343,7 +354,11 @@ private fun TemplateEditorScreen(state: DiaryUiState, viewModel: DiaryViewModel)
     val editor = state.templateEditor ?: return
     BackHandler(onBack = viewModel::closeTemplate)
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(BaselineSpacing.large),
+        Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .verticalScroll(rememberScrollState())
+            .padding(BaselineSpacing.large),
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
         TextButton(onClick = viewModel::closeTemplate) { Text(stringResource(R.string.back)) }
