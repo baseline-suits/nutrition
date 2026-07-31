@@ -197,22 +197,29 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
     migrate()
     with sqlite3.connect(empty) as connection:
         versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
-    assert versions == {"001_initial.sql", "002_private_foods.sql"}
+    assert versions == {"001_initial.sql", "002_private_foods.sql", "003_analysis.sql"}
 
     previous = tmp_path / "previous.db"
     with sqlite3.connect(previous) as connection:
         connection.executescript(
             (Path(__file__).parents[1] / "migrations" / "001_initial.sql").read_text()
         )
+        connection.executescript(
+            (Path(__file__).parents[1] / "migrations" / "002_private_foods.sql").read_text()
+        )
         connection.execute(
             "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
-        connection.execute(
-            "INSERT INTO schema_migrations VALUES (?, ?)", ("001_initial.sql", iso(now()))
+        connection.executemany(
+            "INSERT INTO schema_migrations VALUES (?, ?)",
+            [
+                ("001_initial.sql", iso(now())),
+                ("002_private_foods.sql", iso(now())),
+            ],
         )
         connection.commit()
     monkeypatch.setattr(main.settings, "database", previous)
     migrate()
     with sqlite3.connect(previous) as connection:
         assert connection.execute("SELECT COUNT(*) FROM private_foods").fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3

@@ -1,6 +1,235 @@
 {
   "components": {
     "schemas": {
+      "AnalysisDraft": {
+        "properties": {
+          "completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Tokens"
+          },
+          "estimated_cost_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Micros"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meal": {
+            "$ref": "#/components/schemas/AnalysisMeal"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Tokens"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "const": "completed",
+            "default": "completed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "prompt_version",
+          "schema_version",
+          "meal"
+        ],
+        "title": "AnalysisDraft",
+        "type": "object"
+      },
+      "AnalysisIngredient": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "normalized_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Name"
+          },
+          "nutrients": {
+            "items": {
+              "$ref": "#/components/schemas/NutrientInput-Output"
+            },
+            "maxItems": 100,
+            "title": "Nutrients",
+            "type": "array"
+          },
+          "original_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Original Name",
+            "type": "string"
+          },
+          "preparation": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preparation"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "original_name",
+          "amount",
+          "unit"
+        ],
+        "title": "AnalysisIngredient",
+        "type": "object"
+      },
+      "AnalysisMeal": {
+        "properties": {
+          "ingredients": {
+            "items": {
+              "$ref": "#/components/schemas/AnalysisIngredient"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Ingredients",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "nutrients": {
+            "items": {
+              "$ref": "#/components/schemas/NutrientInput-Output"
+            },
+            "maxItems": 100,
+            "title": "Nutrients",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "ingredients"
+        ],
+        "title": "AnalysisMeal",
+        "type": "object"
+      },
+      "AnalysisRequest": {
+        "properties": {
+          "attachment_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attachment Id"
+          },
+          "locale": {
+            "default": "de",
+            "enum": [
+              "de",
+              "ru"
+            ],
+            "title": "Locale",
+            "type": "string"
+          },
+          "meal_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "breakfast",
+                  "lunch",
+                  "dinner",
+                  "snack",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meal Type"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "AnalysisRequest",
+        "type": "object"
+      },
       "Credentials": {
         "properties": {
           "password": {
@@ -393,9 +622,8 @@
           },
           "nutrients": {
             "items": {
-              "$ref": "#/components/schemas/NutrientInput-Output"
+              "$ref": "#/components/schemas/NutrientOutput"
             },
-            "maxItems": 100,
             "title": "Nutrients",
             "type": "array"
           },
@@ -442,6 +670,7 @@
           "name",
           "capture_method",
           "ingredients",
+          "nutrients",
           "id",
           "version",
           "totals",
@@ -1296,6 +1525,71 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/v1/analysis": {
+      "post": {
+        "operationId": "analyze_meal_v1_analysis_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyze Meal"
       }
     },
     "/v1/auth/login": {
