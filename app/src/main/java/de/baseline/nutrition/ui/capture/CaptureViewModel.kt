@@ -299,7 +299,11 @@ private fun List<NutrientDto>.toFields(): NutrientFields {
         protein = values["protein"].orEmpty(),
         carbohydrates = values["carbohydrates"].orEmpty(),
         fat = values["fat"].orEmpty(),
+        additional = filterNot {
+            it.key in setOf("energy", "protein", "carbohydrates", "fat")
+        },
         sources = associate { it.key to it.source },
+        locks = associate { it.key to it.locked },
         originalValues = values,
     )
 }

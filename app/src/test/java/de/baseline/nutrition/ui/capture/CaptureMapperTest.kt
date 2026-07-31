@@ -49,6 +49,7 @@ class CaptureMapperTest {
         assertEquals("ai_estimate", payload.provenanceSource)
         assertEquals("photo-1", payload.attachmentId)
         assertEquals("190", payload.ingredients.single().nutrients.single().value)
+        assertEquals(false, payload.ingredients.single().nutrients.single().locked)
         assertNull(editor.totals()["protein"])
     }
 }

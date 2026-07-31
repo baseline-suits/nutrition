@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -17,6 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -65,6 +68,20 @@ UPLOAD_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp"}
 UPLOAD_MAX_BYTES = 15 * 1024 * 1024
 UPLOAD_MAX_PIXELS = 25_000_000
 UPLOAD_MAX_EDGE = 2048
+OFF_NUTRIENTS = {
+    "energy-kcal": ("energy", "kcal"),
+    "proteins": ("protein", "g"),
+    "carbohydrates": ("carbohydrates", "g"),
+    "fat": ("fat", "g"),
+    "saturated-fat": ("saturated_fat", "g"),
+    "fiber": ("fiber", "g"),
+    "sugars": ("sugar", "g"),
+    "salt": ("salt", "g"),
+    "sodium": ("sodium", "g"),
+}
+PRODUCT_SCHEMA_VERSION: Literal["off-product/1.0.0"] = "off-product/1.0.0"
+PRODUCT_CORE_NUTRIENTS = {"energy", "protein", "carbohydrates", "fat"}
+logger = logging.getLogger("baseline_api")
 Image.MAX_IMAGE_PIXELS = UPLOAD_MAX_PIXELS
 
 
@@ -100,6 +117,15 @@ class Settings:
         self.external_services_mode = os.environ.get("EXTERNAL_SERVICES_MODE", "live")
         default_objects = Path(__file__).resolve().parents[1] / "private_objects"
         self.object_store = Path(os.environ.get("BASELINE_OBJECT_STORE", default_objects))
+        self.off_base_url = os.environ.get(
+            "BASELINE_OFF_BASE_URL",
+            "https://world.openfoodfacts.org",
+        )
+        self.off_user_agent = os.environ.get(
+            "BASELINE_OFF_USER_AGENT",
+            "BaselineNutrition/0.1 (private beta)",
+        )
+        self.off_cache_hours = int(os.environ.get("BASELINE_OFF_CACHE_HOURS", "24"))
 
 
 settings = Settings()
@@ -168,6 +194,7 @@ class SlidingWindow:
 
 auth_limit = SlidingWindow()
 analysis_limit = SlidingWindow(attempts=8, window_seconds=60)
+off_limit = SlidingWindow(attempts=30, window_seconds=60)
 
 
 class Credentials(BaseModel):
@@ -499,6 +526,25 @@ class UploadInfo(BaseModel):
     content_path: str | None
 
 
+class ProductOutput(BaseModel):
+    schema_version: Literal["off-product/1.0.0"] = PRODUCT_SCHEMA_VERSION
+    barcode: str
+    name: str
+    brand: str | None = None
+    quantity: str | None = None
+    serving_size: str | None = None
+    serving_quantity: Decimal | None = Field(default=None, gt=0)
+    serving_unit: str | None = None
+    basis: Literal["100g", "100ml"]
+    nutrients: list[NutrientInput]
+    missing_core: list[str]
+    language: str | None = None
+    country: str | None = None
+    image_url: str | None = None
+    source: Literal["open_food_facts"] = "open_food_facts"
+    fetched_at: datetime
+
+
 class AnalysisProviderError(Exception):
     def __init__(self, category: str):
         super().__init__(category)
@@ -589,6 +635,154 @@ def call_analysis_provider(
         "completion_tokens": usage.get("output_tokens"),
         "estimated_cost_micros": None,
     }
+
+
+class OffProviderError(Exception):
+    pass
+
+
+def normalize_barcode(value: str) -> str:
+    compact = value.strip()
+    if not compact or re.search(r"[^0-9 -]", compact):
+        raise ValueError("invalid barcode characters")
+    barcode = compact.replace(" ", "").replace("-", "")
+    if len(barcode) not in {8, 12, 13}:
+        raise ValueError("invalid barcode")
+    body = barcode[:-1]
+    total = sum(
+        int(digit) * (3 if index % 2 == 0 else 1) for index, digit in enumerate(reversed(body))
+    )
+    if (10 - total % 10) % 10 != int(barcode[-1]):
+        raise ValueError("invalid checksum")
+    return barcode
+
+
+def call_off(path: str, query: dict[str, str] | None = None) -> dict:
+    if settings.external_services_mode != "live":
+        raise OffProviderError("off_not_configured")
+    suffix = f"?{urlencode(query)}" if query else ""
+    request = UrlRequest(
+        f"{settings.off_base_url.rstrip('/')}{path}{suffix}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": settings.off_user_agent,
+        },
+    )
+    try:
+        with urlopen(request, timeout=12) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        if error.code == 429:
+            raise OffProviderError("off_rate_limit") from error
+        raise OffProviderError("off_unavailable") from error
+    except (TimeoutError, URLError, json.JSONDecodeError) as error:
+        raise OffProviderError("off_unavailable") from error
+
+
+def map_off_product(raw: dict) -> ProductOutput:
+    barcode = normalize_barcode(str(raw.get("code") or ""))
+    name = str(
+        raw.get("product_name") or raw.get("product_name_de") or raw.get("product_name_ru") or ""
+    ).strip()
+    if not name:
+        raise ValueError("missing product name")
+    product_unit = str(raw.get("product_quantity_unit") or "").lower()
+    nutrition_basis = str(raw.get("nutrition_data_per") or "").lower()
+    basis: Literal["100g", "100ml"] = (
+        "100ml" if nutrition_basis == "100ml" or product_unit == "ml" else "100g"
+    )
+    # Open Food Facts uses the `_100g` field suffix for its standardized
+    # per-100 values even when `nutrition_data_per` identifies 100 ml.
+    suffix = "_100g"
+    nutriments = raw.get("nutriments") or {}
+    nutrients = []
+    for off_key, (key, default_unit) in OFF_NUTRIENTS.items():
+        value = nutriments.get(f"{off_key}{suffix}")
+        if value is None:
+            continue
+        try:
+            decimal = Decimal(str(value))
+        except Exception as error:
+            raise ValueError("invalid nutrient value") from error
+        if decimal < 0:
+            raise ValueError("negative nutrient value")
+        unit = str(nutriments.get(f"{off_key}_unit") or default_unit).lower()
+        if unit != default_unit:
+            continue
+        nutrients.append(
+            NutrientInput(
+                key=key,
+                value=decimal,
+                unit=unit,
+                basis=basis,
+                source="open_food_facts",
+                locked=True,
+                accuracy="exact",
+            )
+        )
+    if not nutrients:
+        raise ValueError("missing nutrients")
+    present = {nutrient.key for nutrient in nutrients}
+    image_url = str(raw.get("image_front_small_url") or "").strip() or None
+    if image_url and not image_url.startswith("https://"):
+        image_url = None
+    serving_quantity = raw.get("serving_quantity")
+    serving_unit = str(raw.get("serving_quantity_unit") or "").lower() or None
+    try:
+        serving_quantity = Decimal(str(serving_quantity))
+    except Exception:
+        serving_quantity = None
+    if (
+        serving_unit not in {"g", "ml"}
+        or serving_quantity is None
+        or serving_quantity <= 0
+        or serving_unit != ("ml" if basis == "100ml" else "g")
+    ):
+        serving_quantity = None
+        serving_unit = None
+    countries = raw.get("countries_tags")
+    if isinstance(countries, list):
+        country = next((str(value).removeprefix("en:") for value in countries if value), None)
+    else:
+        country = None
+    return ProductOutput(
+        barcode=barcode,
+        name=name[:200],
+        brand=str(raw.get("brands") or "").strip()[:200] or None,
+        quantity=str(raw.get("quantity") or "").strip()[:100] or None,
+        serving_size=str(raw.get("serving_size") or "").strip()[:100] or None,
+        serving_quantity=serving_quantity,
+        serving_unit=serving_unit,
+        basis=basis,
+        nutrients=nutrients,
+        missing_core=sorted(PRODUCT_CORE_NUTRIENTS - present),
+        language=str(raw.get("lang") or "").strip()[:16] or None,
+        country=country,
+        image_url=image_url,
+        fetched_at=now(),
+    )
+
+
+def cache_product(connection: sqlite3.Connection, product: ProductOutput) -> None:
+    connection.execute(
+        """INSERT INTO product_cache VALUES (?,?,?,?)
+           ON CONFLICT(barcode) DO UPDATE SET payload_json=excluded.payload_json,
+           fetched_at=excluded.fetched_at,expires_at=excluded.expires_at""",
+        (
+            product.barcode,
+            product.model_dump_json(),
+            iso(product.fetched_at),
+            iso(now() + timedelta(hours=settings.off_cache_hours)),
+        ),
+    )
+
+
+def cached_product(connection: sqlite3.Connection, barcode: str) -> ProductOutput | None:
+    row = connection.execute(
+        "SELECT * FROM product_cache WHERE barcode=? AND expires_at>?",
+        (barcode, iso(now())),
+    ).fetchone()
+    return ProductOutput.model_validate_json(row["payload_json"]) if row else None
 
 
 class ProfileInput(BaseModel):
@@ -1468,6 +1662,91 @@ def delete_upload(upload_id: str, user: Annotated[UserContext, Depends(current_u
             (stamp, stamp, upload_id, user.id),
         )
         connection.commit()
+
+
+@app.get("/v1/products/barcode/{barcode}", response_model=ProductOutput)
+def barcode_product(
+    barcode: str,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    off_limit.check(user.id)
+    try:
+        normalized = normalize_barcode(barcode)
+    except ValueError:
+        fail(422, "invalid_barcode", "Der Barcode ist ungültig.")
+    with db() as connection:
+        cached = cached_product(connection, normalized)
+        if cached:
+            return cached
+    try:
+        response = call_off(
+            f"/api/v2/product/{quote(normalized)}.json",
+            {
+                "fields": (
+                    "code,product_name,product_name_de,product_name_ru,brands,quantity,"
+                    "serving_size,serving_quantity,serving_quantity_unit,"
+                    "product_quantity_unit,nutrition_data_per,nutriments,lang,countries_tags,"
+                    "image_front_small_url"
+                )
+            },
+        )
+    except OffProviderError as error:
+        fail(503, str(error), "Open Food Facts ist derzeit nicht erreichbar.")
+    if response.get("status") != 1 or not response.get("product"):
+        fail(404, "product_not_found", "Zu diesem Barcode wurde kein Produkt gefunden.")
+    try:
+        product = map_off_product(response["product"])
+    except ValueError as error:
+        logger.warning("Open Food Facts barcode result was rejected: %s", error)
+        fail(422, "product_incomplete", "Das Produkt enthält keine verlässlichen Nährwerte.")
+    with db() as connection:
+        cache_product(connection, product)
+        connection.commit()
+    return product
+
+
+@app.get("/v1/products/search", response_model=list[ProductOutput])
+def search_products(
+    user: Annotated[UserContext, Depends(current_user)],
+    q: str = Query(min_length=2, max_length=80),
+):
+    off_limit.check(user.id)
+    try:
+        response = call_off(
+            "/cgi/search.pl",
+            {
+                "search_terms": q,
+                "search_simple": "1",
+                "action": "process",
+                "json": "1",
+                "page_size": "20",
+                "fields": (
+                    "code,product_name,product_name_de,product_name_ru,brands,quantity,"
+                    "serving_size,serving_quantity,serving_quantity_unit,"
+                    "product_quantity_unit,nutrition_data_per,nutriments,lang,countries_tags,"
+                    "image_front_small_url"
+                ),
+            },
+        )
+    except OffProviderError as error:
+        fail(503, str(error), "Open Food Facts ist derzeit nicht erreichbar.")
+    products: list[ProductOutput] = []
+    seen: set[str] = set()
+    for raw in response.get("products") or []:
+        try:
+            product = map_off_product(raw)
+        except ValueError as error:
+            logger.warning("Open Food Facts search result was skipped: %s", error)
+            continue
+        if product.barcode in seen:
+            continue
+        seen.add(product.barcode)
+        products.append(product)
+    with db() as connection:
+        for product in products:
+            cache_product(connection, product)
+        connection.commit()
+    return products
 
 
 @app.post("/v1/private-foods", response_model=PrivateFoodOutput, status_code=201)

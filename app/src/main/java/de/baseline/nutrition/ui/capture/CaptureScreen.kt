@@ -64,6 +64,7 @@ fun CaptureScreen(
     viewModel: CaptureViewModel,
     selectedDay: String,
     onDraftReady: (MealEditorDraft) -> Unit,
+    onBarcode: () -> Unit,
     onManual: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -149,6 +150,7 @@ fun CaptureScreen(
     when (state.mode) {
         CaptureMode.Menu -> QuickAddMenu(
             onMode = viewModel::selectMode,
+            onBarcode = onBarcode,
             onManual = onManual,
             onBack = ::requestClose,
         )
@@ -201,6 +203,7 @@ fun CaptureScreen(
 @Composable
 fun QuickAddMenu(
     onMode: (CaptureMode) -> Unit,
+    onBarcode: () -> Unit,
     onManual: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -222,6 +225,12 @@ fun QuickAddMenu(
             R.string.import_food_photo_hint,
             "capture-import",
         ) { onMode(CaptureMode.Import) }
+        CaptureChoice(
+            R.string.scan_barcode,
+            R.string.scan_barcode_hint,
+            "capture-barcode",
+            onBarcode,
+        )
         CaptureChoice(
             R.string.manual_entry,
             R.string.manual_entry_hint,

@@ -9,7 +9,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.viewmodel.compose.viewModel
 import de.baseline.nutrition.data.capture.CaptureRepository
 import de.baseline.nutrition.data.diary.DiaryRepository
+import de.baseline.nutrition.data.product.ProductRepository
 import de.baseline.nutrition.domain.auth.AuthRepository
+import de.baseline.nutrition.ui.barcode.BarcodeScreen
+import de.baseline.nutrition.ui.barcode.BarcodeViewModel
 import de.baseline.nutrition.ui.diary.DiaryScreen
 import de.baseline.nutrition.ui.diary.DiaryViewModel
 import de.baseline.nutrition.ui.capture.CaptureScreen
@@ -21,6 +24,7 @@ fun AccountHomeScreen(
     authRepository: AuthRepository,
     diaryRepository: DiaryRepository,
     captureRepository: CaptureRepository,
+    productRepository: ProductRepository,
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
 ) {
@@ -29,33 +33,62 @@ fun AccountHomeScreen(
     val captureViewModel: CaptureViewModel = viewModel(
         factory = CaptureViewModel.factory(captureRepository, ioDispatcher),
     )
-    var captureOpen by rememberSaveable { mutableStateOf(false) }
-    if (captureOpen) {
-        CaptureScreen(
+    val barcodeViewModel: BarcodeViewModel = viewModel(
+        factory = BarcodeViewModel.factory(productRepository, ioDispatcher),
+    )
+    var activeFlow by rememberSaveable { mutableStateOf("diary") }
+    when (activeFlow) {
+        "capture" -> CaptureScreen(
             viewModel = captureViewModel,
             selectedDay = diaryState.selectedDay.toString(),
             onDraftReady = { draft ->
                 captureViewModel.complete()
-                captureOpen = false
+                activeFlow = "diary"
                 diaryViewModel.openDraft(draft)
+            },
+            onBarcode = {
+                captureViewModel.complete()
+                activeFlow = "barcode"
             },
             onManual = {
                 captureViewModel.complete()
-                captureOpen = false
+                activeFlow = "diary"
                 diaryViewModel.newManualEntry()
             },
             onClose = {
                 captureViewModel.complete()
-                captureOpen = false
+                activeFlow = "diary"
             },
         )
-    } else {
-        DiaryScreen(
+        "barcode" -> BarcodeScreen(
+            viewModel = barcodeViewModel,
+            selectedDay = diaryState.selectedDay.toString(),
+            onDraftReady = { draft ->
+                barcodeViewModel.complete()
+                activeFlow = "diary"
+                diaryViewModel.openDraft(draft)
+            },
+            onManual = {
+                barcodeViewModel.complete()
+                activeFlow = "diary"
+                diaryViewModel.newManualEntry()
+            },
+            onDescription = {
+                barcodeViewModel.complete()
+                captureViewModel.selectMode(de.baseline.nutrition.ui.capture.CaptureMode.Description)
+                activeFlow = "capture"
+            },
+            onClose = {
+                barcodeViewModel.complete()
+                activeFlow = "diary"
+            },
+        )
+        else -> DiaryScreen(
             diaryViewModel,
             authRepository,
             ioDispatcher,
             onLoggedOut,
-            onQuickAdd = { captureOpen = true },
+            onQuickAdd = { activeFlow = "capture" },
         )
     }
 }

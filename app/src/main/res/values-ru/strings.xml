@@ -147,6 +147,8 @@
     <string name="import_food_photo">Импортировать фото</string>
     <string name="import_food_photo_hint">Выберите один снимок через системный фотопикер Android.</string>
     <string name="manual_entry_hint">Введите известные калории, макросы или ингредиенты без ИИ.</string>
+    <string name="scan_barcode">Сканировать штрихкод</string>
+    <string name="scan_barcode_hint">Отсканируйте упаковку или найдите продукт в Open Food Facts.</string>
     <string name="describe_food_example">Например: «Два ломтика ржаного хлеба со сливочным сыром и огурцом».</string>
     <string name="food_description">Описание приёма пищи</string>
     <string name="photo_description_optional">Дополнительное описание (необязательно)</string>
@@ -166,4 +168,28 @@
     <string name="discard_capture_title">Отменить ввод?</string>
     <string name="discard_capture_text">Текст, фото и несохранённый результат анализа будут удалены.</string>
     <string name="analysis_warnings">Проверьте данные</string>
+    <string name="barcode_title">Добавить продукт по штрихкоду</string>
+    <string name="barcode_permission_needed">Камера нужна только для сканирования штрихкода.</string>
+    <string name="barcode_permission_denied">Без доступа к камере можно найти продукт или ввести его вручную.</string>
+    <string name="allow_camera">Разрешить камеру</string>
+    <string name="torch_on">Включить свет</string>
+    <string name="torch_off">Выключить свет</string>
+    <string name="barcode_scan_hint">Поместите штрихкод в рамку</string>
+    <string name="product_loading">Загрузка продукта…</string>
+    <string name="product_search_title">Поиск продукта</string>
+    <string name="product_search_query">Название или бренд</string>
+    <string name="search">Найти</string>
+    <string name="product_imported_at">Данные на: %1$s</string>
+    <string name="product_missing_values">Неполные данные — отсутствуют: %1$s</string>
+    <string name="product_portion">Порция (%1$s %2$s)</string>
+    <string name="product_scaled_values">%1$s ккал · Б %2$s г · У %3$s г · Ж %4$s г</string>
+    <string name="use_product">Проверить в черновике приёма пищи</string>
+    <string name="scan_another_product">Сканировать другой продукт</string>
+    <string name="product_image">Изображение продукта %1$s</string>
+    <string name="product_not_found">Для этого штрихкода не найден однозначный продукт.</string>
+    <string name="product_incomplete">В записи нет надёжных данных о пищевой ценности.</string>
+    <string name="barcode_invalid">Распознанный штрихкод недействителен.</string>
+    <string name="product_rate_limit">Open Food Facts временно перегружен. Повторите попытку позже.</string>
+    <string name="product_offline">Open Food Facts сейчас недоступен. Продукт не был добавлен.</string>
+    <string name="product_amount_invalid">Введите корректное положительное количество.</string>
 </resources>

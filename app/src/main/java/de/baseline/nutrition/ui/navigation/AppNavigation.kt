@@ -69,6 +69,7 @@ fun NutritionNavHost(
                 container.authRepository,
                 container.diaryRepository,
                 container.captureRepository,
+                container.productRepository,
                 container.dispatchers.io,
                 onSessionChanged,
             )

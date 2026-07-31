@@ -19,7 +19,9 @@ data class NutrientFields(
     val protein: String = "",
     val carbohydrates: String = "",
     val fat: String = "",
+    val additional: List<NutrientDto> = emptyList(),
     val sources: Map<String, String> = emptyMap(),
+    val locks: Map<String, Boolean> = emptyMap(),
     val originalValues: Map<String, String> = emptyMap(),
 ) {
     fun value(key: String): String = when (key) {
@@ -59,6 +61,13 @@ data class IngredientDraft(
             nutrients = nutrients.copy(
                 energy = scaled(nutrients.energy), protein = scaled(nutrients.protein),
                 carbohydrates = scaled(nutrients.carbohydrates), fat = scaled(nutrients.fat),
+                additional = nutrients.additional.map { nutrient ->
+                    nutrient.copy(
+                        value = scaled(nutrient.value),
+                        source = "user",
+                        locked = true,
+                    )
+                },
             ),
         )
     }
@@ -111,6 +120,7 @@ data class MealEditorDraft(
     val ingredients: List<IngredientDraft> = emptyList(),
     val captureMethod: String = "manual",
     val provenanceSource: String = "user",
+    val externalReference: String? = null,
     val attachmentId: String? = null,
     val analysisWarnings: List<String> = emptyList(),
     val dirty: Boolean = false,
@@ -152,6 +162,7 @@ data class MealEditorDraft(
             nutrients = directNutrients,
             captureMethod = captureMethod,
             provenanceSource = provenanceSource,
+            externalReference = externalReference,
             attachmentId = attachmentId,
             version = version,
         )
@@ -182,6 +193,7 @@ data class MealEditorDraft(
                 },
                 captureMethod = meal.captureMethod,
                 provenanceSource = meal.provenanceSource ?: "user",
+                externalReference = meal.externalReference,
                 attachmentId = meal.attachmentId,
             )
         }
@@ -226,24 +238,46 @@ fun parseLocalizedDecimal(input: String): BigDecimal? {
 
 private val nutrientKeys = listOf("energy", "protein", "carbohydrates", "fat")
 
-private fun NutrientFields.toDtos(): List<NutrientDto> = nutrientKeys.mapNotNull { key ->
-    val value = parseLocalizedDecimal(value(key)) ?: return@mapNotNull null
-    require(value >= BigDecimal.ZERO) { key }
-    NutrientDto(
-        key = key,
-        value = value.canonical(),
-        unit = if (key == "energy") "kcal" else "g",
-        source = if (originalValues[key]?.let(::parseLocalizedDecimal) == value) {
-            sources[key] ?: "user"
-        } else "user",
-        locked = true,
-    )
+private fun NutrientFields.toDtos(): List<NutrientDto> {
+    val core = nutrientKeys.mapNotNull { key ->
+        val value = parseLocalizedDecimal(value(key)) ?: return@mapNotNull null
+        require(value >= BigDecimal.ZERO) { key }
+        NutrientDto(
+            key = key,
+            value = value.canonical(),
+            unit = if (key == "energy") "kcal" else "g",
+            source = if (originalValues[key]?.let(::parseLocalizedDecimal) == value) {
+                sources[key] ?: "user"
+            } else {
+                "user"
+            },
+            locked = if (originalValues[key]?.let(::parseLocalizedDecimal) == value) {
+                locks[key] ?: true
+            } else {
+                true
+            },
+        )
+    }
+    val preserved = additional.filterNot { it.key in nutrientKeys }.map { nutrient ->
+        val value = requireNotNull(parseLocalizedDecimal(nutrient.value))
+        require(value >= BigDecimal.ZERO) { nutrient.key }
+        nutrient.copy(value = value.canonical())
+    }
+    return core + preserved
 }
 
 private fun List<NutrientDto>.toFields(): NutrientFields {
     val values = filter { it.key in nutrientKeys }.associate { it.key to it.value }
     val sources = filter { it.key in nutrientKeys }.associate { it.key to it.source }
-    return fold(NutrientFields(sources = sources, originalValues = values)) { fields, nutrient ->
+    val locks = filter { it.key in nutrientKeys }.associate { it.key to it.locked }
+    return fold(
+        NutrientFields(
+            additional = filterNot { it.key in nutrientKeys },
+            sources = sources,
+            locks = locks,
+            originalValues = values,
+        ),
+    ) { fields, nutrient ->
         if (nutrient.key in nutrientKeys) fields.with(nutrient.key, nutrient.value) else fields
     }
 }

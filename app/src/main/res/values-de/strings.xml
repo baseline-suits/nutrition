@@ -147,6 +147,8 @@
     <string name="import_food_photo">Foto importieren</string>
     <string name="import_food_photo_hint">Wähle gezielt ein Bild mit dem Android-Fotowähler aus.</string>
     <string name="manual_entry_hint">Trage bekannte Kalorien, Makros oder Zutaten ohne KI ein.</string>
+    <string name="scan_barcode">Barcode scannen</string>
+    <string name="scan_barcode_hint">Scanne ein verpacktes Produkt oder suche es bei Open Food Facts.</string>
     <string name="describe_food_example">Zum Beispiel: „Zwei Scheiben Roggenbrot mit Frischkäse und Gurke“.</string>
     <string name="food_description">Beschreibung der Mahlzeit</string>
     <string name="photo_description_optional">Ergänzende Beschreibung (optional)</string>
@@ -166,4 +168,28 @@
     <string name="discard_capture_title">Erfassung verwerfen?</string>
     <string name="discard_capture_text">Text, Foto und ein noch nicht gespeicherter Analyseentwurf werden entfernt.</string>
     <string name="analysis_warnings">Bitte prüfen</string>
+    <string name="barcode_title">Produkt per Barcode erfassen</string>
+    <string name="barcode_permission_needed">Die Kamera wird ausschließlich für den Barcode-Scan benötigt.</string>
+    <string name="barcode_permission_denied">Ohne Kameraerlaubnis kannst du weiterhin nach einem Produkt suchen oder es manuell erfassen.</string>
+    <string name="allow_camera">Kamera erlauben</string>
+    <string name="torch_on">Licht einschalten</string>
+    <string name="torch_off">Licht ausschalten</string>
+    <string name="barcode_scan_hint">Barcode in den Rahmen halten</string>
+    <string name="product_loading">Produkt wird geladen…</string>
+    <string name="product_search_title">Produkt suchen</string>
+    <string name="product_search_query">Produktname oder Marke</string>
+    <string name="search">Suchen</string>
+    <string name="product_imported_at">Stand: %1$s</string>
+    <string name="product_missing_values">Nicht vollständig – fehlende Werte: %1$s</string>
+    <string name="product_portion">Portion (%1$s %2$s)</string>
+    <string name="product_scaled_values">%1$s kcal · P %2$s g · KH %3$s g · F %4$s g</string>
+    <string name="use_product">Im Mahlzeitenentwurf prüfen</string>
+    <string name="scan_another_product">Anderes Produkt scannen</string>
+    <string name="product_image">Produktbild von %1$s</string>
+    <string name="product_not_found">Zu diesem Barcode wurde kein eindeutiges Produkt gefunden.</string>
+    <string name="product_incomplete">Der Datensatz enthält keine verlässlich nutzbaren Nährwerte.</string>
+    <string name="barcode_invalid">Der erkannte Barcode ist ungültig.</string>
+    <string name="product_rate_limit">Open Food Facts ist kurzzeitig ausgelastet. Bitte versuche es später erneut.</string>
+    <string name="product_offline">Open Food Facts ist derzeit nicht erreichbar. Es wurde kein Produkt übernommen.</string>
+    <string name="product_amount_invalid">Bitte gib eine gültige positive Menge ein.</string>
 </resources>

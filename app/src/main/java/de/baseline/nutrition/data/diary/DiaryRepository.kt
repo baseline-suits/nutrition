@@ -62,6 +62,7 @@ data class MealDto(
     val ingredients: List<IngredientDto> = emptyList(),
     val nutrients: List<NutrientDto> = emptyList(),
     @SerialName("provenance_source") val provenanceSource: String? = null,
+    @SerialName("external_reference") val externalReference: String? = null,
     @SerialName("attachment_id") val attachmentId: String? = null,
     val version: Int,
     @SerialName("updated_at") val updatedAt: String,

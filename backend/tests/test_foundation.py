@@ -202,6 +202,7 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
         "002_private_foods.sql",
         "003_analysis.sql",
         "004_photo_uploads.sql",
+        "005_product_cache.sql",
     }
 
     previous = tmp_path / "previous.db"
@@ -215,6 +216,9 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
         connection.executescript(
             (Path(__file__).parents[1] / "migrations" / "003_analysis.sql").read_text()
         )
+        connection.executescript(
+            (Path(__file__).parents[1] / "migrations" / "004_photo_uploads.sql").read_text()
+        )
         connection.execute(
             "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
@@ -224,6 +228,7 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
                 ("001_initial.sql", iso(now())),
                 ("002_private_foods.sql", iso(now())),
                 ("003_analysis.sql", iso(now())),
+                ("004_photo_uploads.sql", iso(now())),
             ],
         )
         connection.commit()
@@ -231,4 +236,4 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
     migrate()
     with sqlite3.connect(previous) as connection:
         assert connection.execute("SELECT COUNT(*) FROM private_foods").fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5

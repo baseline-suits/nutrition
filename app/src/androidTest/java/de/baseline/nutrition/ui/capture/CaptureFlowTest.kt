@@ -28,12 +28,30 @@ class CaptureFlowTest {
         assertEntry("capture-import", CaptureMode.Import)
     }
 
+    @Test
+    fun barcodeHasDedicatedEntry() {
+        var selected = false
+        compose.setContent {
+            BaselineTheme {
+                QuickAddMenu(
+                    onMode = {},
+                    onBarcode = { selected = true },
+                    onManual = {},
+                    onBack = {},
+                )
+            }
+        }
+        compose.onNodeWithTag("capture-barcode").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(true, selected) }
+    }
+
     private fun assertEntry(tag: String, expected: CaptureMode) {
         var selected: CaptureMode? = null
         compose.setContent {
             BaselineTheme {
                 QuickAddMenu(
                     onMode = { selected = it },
+                    onBarcode = {},
                     onManual = {},
                     onBack = {},
                 )
