@@ -45,11 +45,16 @@ import de.baseline.nutrition.domain.diary.MealEditorDraft
 import de.baseline.nutrition.domain.diary.NutrientFields
 import de.baseline.nutrition.domain.diary.PrivateFoodEditorDraft
 import de.baseline.nutrition.domain.diary.parseLocalizedDecimal
+import de.baseline.nutrition.data.sync.MealOperationStatus
+import de.baseline.nutrition.data.sync.MealSyncInfo
+import de.baseline.nutrition.data.sync.MealSyncOverview
 import de.baseline.nutrition.ui.theme.BaselineSpacing
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
+import java.time.Instant
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -122,6 +127,7 @@ private fun DayScreen(
         ) {
             Text(stringResource(R.string.open_history))
         }
+        SyncOverviewCard(state.sync.overview, viewModel::syncNow)
         if (state.loading && state.meals.isEmpty()) {
             Text(stringResource(R.string.loading_diary))
         } else {
@@ -139,11 +145,16 @@ private fun DayScreen(
                         meals.forEach { meal ->
                             MealCard(
                                 meal = meal,
+                                syncInfo = state.sync.byMealId[meal.id],
                                 isFavorite = state.favorites.any { it.originalMealId == meal.id },
                                 onToggleFavorite = { viewModel.toggleFavorite(meal) },
                                 onEdit = { viewModel.edit(meal) },
                                 onDuplicate = { viewModel.duplicate(meal) },
                                 onDelete = { deleteCandidate = meal },
+                                onRetrySync = viewModel::retrySync,
+                                onDiscardSync = viewModel::discardSync,
+                                onKeepServer = viewModel::keepServer,
+                                onApplyMine = viewModel::applyMine,
                             )
                         }
                     }
@@ -212,11 +223,16 @@ private fun ProgressLine(label: Int, currentText: String?, targetText: String?, 
 @Composable
 private fun MealCard(
     meal: MealDto,
+    syncInfo: MealSyncInfo?,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
+    onRetrySync: (String) -> Unit,
+    onDiscardSync: (String) -> Unit,
+    onKeepServer: (String) -> Unit,
+    onApplyMine: (String) -> Unit,
 ) {
     val totals = mealTotals(meal)
     val time = runCatching { OffsetDateTime.parse(meal.eatenAt).toLocalTime().withSecond(0).withNano(0) }.getOrNull()
@@ -227,7 +243,10 @@ private fun MealCard(
             Text("P ${totals["protein"]?.display() ?: "–"} g · KH ${totals["carbohydrates"]?.display() ?: "–"} g · F ${totals["fat"]?.display() ?: "–"} g")
             val source = (meal.nutrients + meal.ingredients.flatMap { it.nutrients }).firstOrNull()?.source
                 ?: meal.provenanceSource ?: meal.captureMethod
-            Text("${stringResource(R.string.source)}: ${sourceLabel(source)} · ${stringResource(R.string.synced)}")
+            Text(
+                "${stringResource(R.string.source)}: ${sourceLabel(source)}" +
+                    if (syncInfo == null) " · ${stringResource(R.string.synced)}" else "",
+            )
             val micros = (meal.nutrients + meal.ingredients.flatMap { it.nutrients })
                 .filterNot { it.key in coreNutrients }
             if (micros.isNotEmpty()) {
@@ -237,16 +256,115 @@ private fun MealCard(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
             ) {
-                TextButton(onClick = onToggleFavorite) {
-                    Text(
-                        stringResource(
-                            if (isFavorite) R.string.remove_favorite else R.string.add_favorite,
-                        ),
-                    )
+                if (syncInfo == null) {
+                    TextButton(onClick = onToggleFavorite) {
+                        Text(
+                            stringResource(
+                                if (isFavorite) R.string.remove_favorite else R.string.add_favorite,
+                            ),
+                        )
+                    }
                 }
                 TextButton(onClick = onEdit) { Text(stringResource(R.string.edit)) }
                 TextButton(onClick = onDuplicate) { Text(stringResource(R.string.duplicate)) }
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.delete)) }
+            }
+            syncInfo?.let { info ->
+                MealSyncControls(
+                    mealId = meal.id,
+                    info = info,
+                    onRetry = onRetrySync,
+                    onEdit = onEdit,
+                    onDiscard = onDiscardSync,
+                    onKeepServer = onKeepServer,
+                    onApplyMine = onApplyMine,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun MealSyncControls(
+    mealId: String,
+    info: MealSyncInfo,
+    onRetry: (String) -> Unit,
+    onEdit: () -> Unit,
+    onDiscard: (String) -> Unit,
+    onKeepServer: (String) -> Unit,
+    onApplyMine: (String) -> Unit,
+) {
+    Text(
+        syncStatusLabel(info.status),
+        modifier = Modifier.testTag("meal-sync-status-$mealId"),
+    )
+    when (info.status) {
+        MealOperationStatus.FailedRetryable,
+        MealOperationStatus.FailedPermanent,
+        -> Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .testTag("meal-sync-actions-$mealId"),
+        ) {
+            TextButton(onClick = { onRetry(info.operationId) }) {
+                Text(stringResource(R.string.sync_retry))
+            }
+            TextButton(onClick = onEdit) {
+                Text(stringResource(R.string.edit))
+            }
+            TextButton(onClick = { onDiscard(info.operationId) }) {
+                Text(stringResource(R.string.discard_local_change))
+            }
+        }
+        MealOperationStatus.Conflict -> Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .testTag("meal-conflict-actions-$mealId"),
+        ) {
+            TextButton(onClick = { onKeepServer(info.operationId) }) {
+                Text(stringResource(R.string.keep_server_version))
+            }
+            TextButton(onClick = { onApplyMine(info.operationId) }) {
+                Text(stringResource(R.string.apply_my_version))
+            }
+        }
+        else -> Unit
+    }
+    if (info.errorCode != null) {
+        Text(stringResource(R.string.sync_error_code, info.errorCode))
+    }
+}
+
+@Composable
+private fun SyncOverviewCard(overview: MealSyncOverview, onSync: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().testTag("sync-overview")) {
+        Column(
+            Modifier.padding(BaselineSpacing.medium),
+            verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
+        ) {
+            Text(stringResource(R.string.sync_status_title), fontWeight = FontWeight.Bold)
+            if (overview.pending == 0 && overview.failed == 0 && overview.conflicts == 0) {
+                Text(stringResource(R.string.sync_all_current))
+            } else {
+                Text(
+                    stringResource(
+                        R.string.sync_counts,
+                        overview.pending,
+                        overview.failed,
+                        overview.conflicts,
+                    ),
+                )
+                Button(onClick = onSync, modifier = Modifier.testTag("sync-now")) {
+                    Text(stringResource(R.string.sync_now))
+                }
+            }
+            overview.lastSuccessAt?.let { timestamp ->
+                val local = Instant.ofEpochMilli(timestamp)
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDateTime()
+                    .withSecond(0)
+                    .withNano(0)
+                Text(stringResource(R.string.sync_last_success, local.toString()))
             }
         }
     }
@@ -494,8 +612,22 @@ private fun ErrorText(error: DiaryError) {
         DiaryError.Network -> R.string.diary_network_error
         DiaryError.Validation -> R.string.diary_validation_error
         DiaryError.Conflict -> R.string.diary_conflict_error
+        DiaryError.QueueFull -> R.string.sync_queue_full
+        DiaryError.Session -> R.string.capture_error_session
     }))
 }
+
+@Composable
+private fun syncStatusLabel(status: MealOperationStatus?): String = stringResource(
+    when (status) {
+        MealOperationStatus.Pending -> R.string.sync_pending
+        MealOperationStatus.Syncing -> R.string.sync_syncing
+        MealOperationStatus.FailedRetryable -> R.string.sync_failed_retryable
+        MealOperationStatus.FailedPermanent -> R.string.sync_failed_permanent
+        MealOperationStatus.Conflict -> R.string.sync_conflict
+        MealOperationStatus.Synced, null -> R.string.synced
+    },
+)
 
 @Composable
 private fun sourceLabel(source: String): String = stringResource(when (source) {

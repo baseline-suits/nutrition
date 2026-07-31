@@ -164,3 +164,78 @@ def test_quick_manual_entry_and_private_food_isolation(tmp_path, monkeypatch):
         )
         stored_meal = client.get(f"/v1/meals/{created.json()['id']}", headers=first_headers).json()
         assert stored_meal["nutrients"][0]["value"] == "450.5"
+
+
+def test_meal_mutations_are_idempotent_before_and_after_processing(tmp_path, monkeypatch):
+    from baseline_api import main
+
+    monkeypatch.setattr(main.settings, "database", tmp_path / "mutation-idempotency.db")
+    create_code("mutation-code-value-123456")
+    with TestClient(app) as client:
+        token = register(client, "mutation-user", "mutation-code-value-123456")
+        headers = {"Authorization": f"Bearer {token}"}
+        create_headers = headers | {"Idempotency-Key": "create-stable-key"}
+        created = client.post("/v1/meals", json=meal("ignored-client"), headers=create_headers)
+        repeated_create = client.post(
+            "/v1/meals",
+            json=meal("another-client"),
+            headers=create_headers,
+        )
+        assert created.status_code == 201
+        assert repeated_create.status_code == 201
+        assert repeated_create.json() == created.json()
+
+        conflicting_create = meal("ignored")
+        conflicting_create["name"] = "Andere Mahlzeit"
+        conflict = client.post("/v1/meals", json=conflicting_create, headers=create_headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+
+        update = meal(created.json()["client_id"])
+        update["version"] = created.json()["version"]
+        update["name"] = "Bearbeitet"
+        update_headers = headers | {"Idempotency-Key": "update-stable-key"}
+        first_update = client.put(
+            f"/v1/meals/{created.json()['id']}",
+            json=update,
+            headers=update_headers,
+        )
+        repeated_update = client.put(
+            f"/v1/meals/{created.json()['id']}",
+            json=update,
+            headers=update_headers,
+        )
+        assert first_update.status_code == 200
+        assert repeated_update.status_code == 200
+        assert repeated_update.json() == first_update.json()
+        assert repeated_update.json()["version"] == 2
+
+        changed_update = dict(update)
+        changed_update["name"] = "Andere Wiederholung"
+        conflict = client.put(
+            f"/v1/meals/{created.json()['id']}",
+            json=changed_update,
+            headers=update_headers,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+
+        second = client.post("/v1/meals", json=meal("delete-second"), headers=headers).json()
+        delete_headers = headers | {"Idempotency-Key": "delete-stable-key"}
+        assert (
+            client.delete(
+                f"/v1/meals/{created.json()['id']}",
+                headers=delete_headers,
+            ).status_code
+            == 204
+        )
+        assert (
+            client.delete(
+                f"/v1/meals/{created.json()['id']}",
+                headers=delete_headers,
+            ).status_code
+            == 204
+        )
+        conflict = client.delete(f"/v1/meals/{second['id']}", headers=delete_headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"

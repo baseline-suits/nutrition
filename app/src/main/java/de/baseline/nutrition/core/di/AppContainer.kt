@@ -14,6 +14,10 @@ import de.baseline.nutrition.data.profile.ProfileRepository
 import de.baseline.nutrition.data.product.ProductRepository
 import de.baseline.nutrition.data.profile.OnboardingDraftStore
 import de.baseline.nutrition.data.session.SecureSessionStore
+import de.baseline.nutrition.data.sync.ApiMealRemoteDataSource
+import de.baseline.nutrition.data.sync.EncryptedMealQueueStore
+import de.baseline.nutrition.data.sync.MealSyncManager
+import de.baseline.nutrition.data.sync.WorkManagerMealSyncScheduler
 import de.baseline.nutrition.domain.auth.AuthRepository
 
 class AppContainer(
@@ -29,11 +33,18 @@ class AppContainer(
         sessionStore = sessionStore,
     )
     private val api = ApiClient(serverSettings::currentUrl, sessionStore)
-    val authRepository: AuthRepository = HttpAuthRepository(api, sessionStore)
+    private val syncScheduler = WorkManagerMealSyncScheduler(context)
+    private val mealSyncManager = MealSyncManager(
+        store = EncryptedMealQueueStore(context),
+        remote = ApiMealRemoteDataSource(api),
+        currentUserId = sessionStore::readUserId,
+        scheduler = syncScheduler,
+    )
+    val authRepository: AuthRepository = HttpAuthRepository(api, sessionStore, syncScheduler)
     val sessionRepository = authRepository
     val profileRepository = ProfileRepository(api)
     val onboardingDraftStore = OnboardingDraftStore(sessionStore)
-    val diaryRepository = DiaryRepository(api, sessionStore)
+    val diaryRepository = DiaryRepository(api, sessionStore, mealSyncManager)
     val captureRepository = CaptureRepository(api)
     val productRepository = ProductRepository(api)
 }

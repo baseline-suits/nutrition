@@ -11,13 +11,16 @@ import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.PrivateFoodDto
 import de.baseline.nutrition.data.diary.toDiaryTargets
 import de.baseline.nutrition.data.network.ApiException
+import de.baseline.nutrition.data.sync.MealQueueFullException
+import de.baseline.nutrition.data.sync.MealSyncUiState
 import de.baseline.nutrition.domain.diary.IngredientDraft
 import de.baseline.nutrition.domain.diary.MealEditorDraft
 import de.baseline.nutrition.domain.diary.PrivateFoodEditorDraft
 import de.baseline.nutrition.domain.diary.toIngredient
 import de.baseline.nutrition.domain.diary.toEditorDraft
 import java.time.LocalDate
-import java.time.OffsetDateTime
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +29,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class DiaryError { Network, Validation, Conflict }
+enum class DiaryError { Network, Validation, Conflict, QueueFull, Session }
 
 data class DiaryUiState(
     val selectedDay: LocalDate = LocalDate.now(),
@@ -35,6 +38,7 @@ data class DiaryUiState(
     val targets: DiaryTargets? = null,
     val privateFoods: List<PrivateFoodDto> = emptyList(),
     val favorites: List<FavoriteDto> = emptyList(),
+    val sync: MealSyncUiState = MealSyncUiState(),
     val editor: MealEditorDraft? = null,
     val favoriteEditor: FavoriteDto? = null,
     val templateEditor: PrivateFoodEditorDraft? = null,
@@ -54,6 +58,7 @@ class DiaryViewModel(
         val summary: DaySummaryDto,
         val targets: DiaryTargets,
         val favorites: List<FavoriteDto>,
+        val sync: MealSyncUiState,
     )
 
     private val mutableState = MutableStateFlow(DiaryUiState())
@@ -72,17 +77,27 @@ class DiaryViewModel(
                         summary = repository.summary(day),
                         targets = repository.targets(),
                         favorites = repository.favorites(),
+                        sync = repository.syncUiState(),
                     )
                 }
             }.onSuccess { loaded ->
                 mutableState.update { state ->
                     val targets = loaded.summary.targets?.toDiaryTargets()
                         ?: loaded.targets.takeIf { state.selectedDay >= LocalDate.now() }
+                    val lastSuccess = loaded.sync.overview.lastSuccessAt?.let {
+                        Instant.ofEpochMilli(it)
+                            .atZone(ZoneId.systemDefault())
+                            .toLocalTime()
+                            .withNano(0)
+                            .toString()
+                    }
                     state.copy(meals = loaded.meals, summary = loaded.summary, targets = targets,
-                        favorites = loaded.favorites, loading = false,
-                        lastSync = OffsetDateTime.now().toLocalTime().withNano(0).toString())
+                        favorites = loaded.favorites, sync = loaded.sync, loading = false,
+                        lastSync = lastSuccess)
                 }
-            }.onFailure { mutableState.update { it.copy(loading = false, error = DiaryError.Network) } }
+            }.onFailure { error ->
+                mutableState.update { it.copy(loading = false, error = error.toDiaryError()) }
+            }
         }
     }
 
@@ -167,20 +182,31 @@ class DiaryViewModel(
                         repository.save(payload, editor.mealId)
                     } else {
                         repository.updateFavorite(favorite.id, favorite.displayName, payload)
+                        null
                     }
                 }
             }
-                .onSuccess {
+                .onSuccess { saved ->
                     mutableState.update { state ->
-                        state.copy(editor = null, favoriteEditor = null, saving = false)
+                        val meals = if (favorite == null) {
+                            state.meals.filterNot {
+                                it.id == saved?.id || it.clientId == saved?.clientId
+                            } + listOfNotNull(saved)
+                        } else {
+                            state.meals
+                        }
+                        state.copy(
+                            meals = meals,
+                            editor = null,
+                            favoriteEditor = null,
+                            saving = false,
+                        )
                     }
                     refresh()
                 }
                 .onFailure { error ->
                     mutableState.update {
-                        it.copy(saving = false, error = if (error is ApiException && error.status == 409) {
-                            DiaryError.Conflict
-                        } else DiaryError.Network)
+                        it.copy(saving = false, error = error.toDiaryError())
                     }
                 }
         }
@@ -196,6 +222,26 @@ class DiaryViewModel(
             if (favorite == null) repository.createFavorite(meal.id, meal.name)
             else repository.deleteFavorite(favorite.id)
         }
+    }
+
+    fun syncNow() = mutateAndRefresh {
+        repository.syncNow()
+    }
+
+    fun retrySync(operationId: String) = mutateAndRefresh {
+        repository.retrySync(operationId)
+    }
+
+    fun discardSync(operationId: String) = mutateAndRefresh {
+        repository.discardSync(operationId)
+    }
+
+    fun keepServer(operationId: String) = mutateAndRefresh {
+        repository.keepServer(operationId)
+    }
+
+    fun applyMine(operationId: String) = mutateAndRefresh {
+        repository.applyMine(operationId)
     }
 
     fun scaleEditor(factor: String) {
@@ -270,7 +316,9 @@ class DiaryViewModel(
         viewModelScope.launch {
             runCatching { withContext(ioDispatcher) { block() } }
                 .onSuccess { refresh() }
-                .onFailure { mutableState.update { it.copy(error = DiaryError.Network) } }
+                .onFailure { error ->
+                    mutableState.update { it.copy(error = error.toDiaryError()) }
+                }
         }
     }
 
@@ -290,4 +338,11 @@ class DiaryViewModel(
                     DiaryViewModel(repository, ioDispatcher) as T
             }
     }
+}
+
+private fun Throwable.toDiaryError(): DiaryError = when {
+    this is MealQueueFullException -> DiaryError.QueueFull
+    this is ApiException && status == 401 -> DiaryError.Session
+    this is ApiException && status == 409 -> DiaryError.Conflict
+    else -> DiaryError.Network
 }

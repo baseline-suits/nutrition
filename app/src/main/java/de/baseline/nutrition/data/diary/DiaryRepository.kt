@@ -3,6 +3,12 @@ package de.baseline.nutrition.data.diary
 import de.baseline.nutrition.data.network.ApiClient
 import de.baseline.nutrition.data.network.ApiException
 import de.baseline.nutrition.data.session.SecureSessionStore
+import de.baseline.nutrition.data.sync.MealSyncManager
+import de.baseline.nutrition.data.sync.MealSyncUiState
+import de.baseline.nutrition.data.sync.SyncRunResult
+import de.baseline.nutrition.data.sync.asPayload
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -223,33 +229,129 @@ data class PrivateFoodDto(
 class DiaryRepository(
     private val api: ApiClient,
     private val sessionStore: SecureSessionStore? = null,
+    private val mealSyncManager: MealSyncManager? = null,
 ) : HistoryDataSource {
     private val historyCache = ConcurrentHashMap<String, HistoryResponseDto>()
 
-    suspend fun meals(day: String): List<MealDto> =
-        api.request<Unit, List<MealDto>>("/v1/days/$day/meals", "GET", authenticated = true)
-
-    suspend fun summary(day: String): DaySummaryDto =
-        api.request<Unit, DaySummaryDto>("/v1/days/$day/summary", "GET", authenticated = true)
-
-    suspend fun targets(): DiaryTargets =
-        api.request<Unit, DiaryTargets>("/v1/profile", "GET", authenticated = true)
-
-    suspend fun save(payload: MealPayload, mealId: String? = null): MealDto =
-        if (mealId == null) {
-            api.request("/v1/meals", "POST", payload, authenticated = true)
-        } else {
-            api.request("/v1/meals/$mealId", "PUT", payload, authenticated = true)
+    suspend fun meals(day: String): List<MealDto> {
+        val manager = mealSyncManager
+            ?: return api.request<Unit, List<MealDto>>(
+                "/v1/days/$day/meals",
+                "GET",
+                authenticated = true,
+            )
+        return try {
+            val remote = api.request<Unit, List<MealDto>>(
+                "/v1/days/$day/meals",
+                "GET",
+                authenticated = true,
+            )
+            manager.cacheRemoteMeals(day, remote)
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            val cached = manager.cachedMeals(day)
+            if (!cached.available) throw error
+            cached.meals
         }
-
-    suspend fun delete(mealId: String) {
-        api.request<Unit, Unit>("/v1/meals/$mealId", "DELETE", authenticated = true)
     }
 
-    suspend fun duplicate(mealId: String): MealDto = api.request(
-        "/v1/meals/$mealId/duplicate", "POST", Unit, authenticated = true,
-        headers = mapOf("Idempotency-Key" to UUID.randomUUID().toString()),
-    )
+    suspend fun summary(day: String): DaySummaryDto {
+        val manager = mealSyncManager
+            ?: return api.request<Unit, DaySummaryDto>(
+                "/v1/days/$day/summary",
+                "GET",
+                authenticated = true,
+            )
+        return try {
+            api.request<Unit, DaySummaryDto>(
+                "/v1/days/$day/summary",
+                "GET",
+                authenticated = true,
+            ).also { manager.cacheSummary(it) }
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            val cachedMeals = manager.cachedMeals(day)
+            if (!cachedMeals.available) throw error
+            localSummary(day, cachedMeals.meals, manager.cachedSummary(day))
+        }
+    }
+
+    suspend fun targets(): DiaryTargets {
+        val manager = mealSyncManager
+            ?: return api.request<Unit, DiaryTargets>(
+                "/v1/profile",
+                "GET",
+                authenticated = true,
+            )
+        return try {
+            api.request<Unit, DiaryTargets>("/v1/profile", "GET", authenticated = true)
+                .also { manager.cacheTargets(it) }
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            manager.cachedTargets() ?: throw error
+        }
+    }
+
+    suspend fun save(payload: MealPayload, mealId: String? = null): MealDto {
+        val manager = mealSyncManager
+        if (manager == null) {
+            val key = if (mealId == null) payload.clientId else UUID.randomUUID().toString()
+            return if (mealId == null) {
+                api.request(
+                    "/v1/meals",
+                    "POST",
+                    payload,
+                    authenticated = true,
+                    headers = mapOf("Idempotency-Key" to key),
+                )
+            } else {
+                api.request(
+                    "/v1/meals/$mealId",
+                    "PUT",
+                    payload,
+                    authenticated = true,
+                    headers = mapOf("Idempotency-Key" to key),
+                )
+            }
+        }
+        val local = manager.enqueueSave(payload, mealId)
+        manager.sync(force = true)
+        return manager.mealByClientId(payload.clientId) ?: local
+    }
+
+    suspend fun delete(mealId: String) {
+        val manager = mealSyncManager
+        if (manager == null) {
+            api.request<Unit, Unit>(
+                "/v1/meals/$mealId",
+                "DELETE",
+                authenticated = true,
+                headers = mapOf("Idempotency-Key" to UUID.randomUUID().toString()),
+            )
+            return
+        }
+        manager.enqueueDelete(mealId)
+        manager.sync(force = true)
+    }
+
+    suspend fun duplicate(mealId: String): MealDto {
+        val manager = mealSyncManager
+            ?: return api.request(
+                "/v1/meals/$mealId/duplicate",
+                "POST",
+                Unit,
+                authenticated = true,
+                headers = mapOf("Idempotency-Key" to UUID.randomUUID().toString()),
+            )
+        val original = manager.meal(mealId)
+            ?: api.request<Unit, MealDto>("/v1/meals/$mealId", "GET", authenticated = true)
+        return save(
+            original.asPayload(UUID.randomUUID().toString()).copy(
+                attachmentId = null,
+                version = null,
+            ),
+        )
+    }
 
     suspend fun privateFoods(query: String = ""): List<PrivateFoodDto> {
         val suffix = if (query.isBlank()) "" else "?query=" +
@@ -270,49 +372,134 @@ class DiaryRepository(
 
     suspend fun favorites(query: String = "", sort: String = "recent"): List<FavoriteDto> {
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.toString())
-        return api.request<Unit, List<FavoriteDto>>(
-            "/v1/favorites?query=$encoded&sort=$sort",
-            "GET",
-            authenticated = true,
-        )
+        val manager = mealSyncManager
+            ?: return api.request<Unit, List<FavoriteDto>>(
+                "/v1/favorites?query=$encoded&sort=$sort",
+                "GET",
+                authenticated = true,
+            )
+        return try {
+            api.request<Unit, List<FavoriteDto>>(
+                "/v1/favorites?query=$encoded&sort=$sort",
+                "GET",
+                authenticated = true,
+            ).also { manager.cacheFavorites(it) }
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            val (available, cached) = manager.cachedFavorites()
+            if (!available) throw error
+            cached.filter {
+                query.isBlank() ||
+                    it.displayName.contains(query, ignoreCase = true) ||
+                    it.meal.name.contains(query, ignoreCase = true)
+            }.let { values ->
+                if (sort == "name") values.sortedBy { it.displayName.lowercase() }
+                else values.sortedByDescending { it.lastUsedAt ?: it.updatedAt }
+            }
+        }
     }
 
-    suspend fun createFavorite(mealId: String, displayName: String): FavoriteDto =
-        api.request(
+    suspend fun createFavorite(mealId: String, displayName: String): FavoriteDto {
+        val favorite: FavoriteDto = api.request(
             "/v1/meals/$mealId/favorite",
             "POST",
             FavoriteCreatePayload(displayName),
             authenticated = true,
         )
+        mealSyncManager?.let { manager ->
+            val cached = manager.cachedFavorites().second
+            manager.cacheFavorites(cached.filterNot { it.id == favorite.id } + favorite)
+        }
+        return favorite
+    }
 
     suspend fun updateFavorite(
         id: String,
         displayName: String,
         meal: MealPayload? = null,
-    ): FavoriteDto =
-        api.request(
+    ): FavoriteDto {
+        val favorite: FavoriteDto = api.request(
             "/v1/favorites/$id",
             "PUT",
             FavoriteUpdatePayload(displayName, meal),
             authenticated = true,
         )
+        mealSyncManager?.let { manager ->
+            val cached = manager.cachedFavorites().second
+            manager.cacheFavorites(cached.filterNot { it.id == favorite.id } + favorite)
+        }
+        return favorite
+    }
 
     suspend fun deleteFavorite(id: String) {
         api.request<Unit, Unit>("/v1/favorites/$id", "DELETE", authenticated = true)
+        mealSyncManager?.let { manager ->
+            manager.cacheFavorites(manager.cachedFavorites().second.filterNot { it.id == id })
+        }
     }
 
-    suspend fun recentMeals(limit: Int = 30, offset: Int = 0): List<MealDto> =
-        api.request<Unit, List<MealDto>>(
-            "/v1/recent-meals?limit=$limit&offset=$offset",
-            "GET",
-            authenticated = true,
-        )
+    suspend fun recentMeals(limit: Int = 30, offset: Int = 0): List<MealDto> {
+        val manager = mealSyncManager
+            ?: return api.request<Unit, List<MealDto>>(
+                "/v1/recent-meals?limit=$limit&offset=$offset",
+                "GET",
+                authenticated = true,
+            )
+        return try {
+            api.request<Unit, List<MealDto>>(
+                "/v1/recent-meals?limit=$limit&offset=$offset",
+                "GET",
+                authenticated = true,
+            ).also { manager.cacheRecent(it) }
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            manager.recent(limit, offset)
+        }
+    }
 
-    suspend fun favoriteDraft(id: String, payload: ReuseRequestPayload): MealPayload =
-        api.request("/v1/favorites/$id/draft", "POST", payload, authenticated = true)
+    suspend fun favoriteDraft(id: String, payload: ReuseRequestPayload): MealPayload {
+        return try {
+            api.request("/v1/favorites/$id/draft", "POST", payload, authenticated = true)
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            val favorite = mealSyncManager?.cachedFavorites()?.second
+                ?.firstOrNull { it.id == id } ?: throw error
+            favorite.meal.reused(payload)
+        }
+    }
 
-    suspend fun recentDraft(id: String, payload: ReuseRequestPayload): MealPayload =
-        api.request("/v1/meals/$id/draft", "POST", payload, authenticated = true)
+    suspend fun recentDraft(id: String, payload: ReuseRequestPayload): MealPayload {
+        return try {
+            api.request("/v1/meals/$id/draft", "POST", payload, authenticated = true)
+        } catch (error: Exception) {
+            if (!canUseCache(error)) throw error
+            val meal = mealSyncManager?.meal(id) ?: throw error
+            meal.asPayload().reused(payload)
+        }
+    }
+
+    suspend fun syncPending(): SyncRunResult =
+        mealSyncManager?.sync() ?: SyncRunResult(false, false)
+
+    suspend fun syncNow(): SyncRunResult =
+        mealSyncManager?.sync(force = true) ?: SyncRunResult(false, false)
+
+    suspend fun syncUiState(): MealSyncUiState =
+        mealSyncManager?.uiState() ?: MealSyncUiState()
+
+    suspend fun retrySync(operationId: String): SyncRunResult =
+        mealSyncManager?.retry(operationId) ?: SyncRunResult(false, false)
+
+    suspend fun discardSync(operationId: String) {
+        mealSyncManager?.discard(operationId)
+    }
+
+    suspend fun keepServer(operationId: String) {
+        mealSyncManager?.keepServer(operationId)
+    }
+
+    suspend fun applyMine(operationId: String): SyncRunResult =
+        mealSyncManager?.applyMine(operationId) ?: SyncRunResult(false, false)
 
     override suspend fun history(days: Int): HistoryLoad {
         require(days in 1..100)
@@ -332,4 +519,48 @@ class DiaryRepository(
             HistoryLoad(cached, cached = true)
         }
     }
+
+    private fun canUseCache(error: Exception): Boolean =
+        error !is ApiException || error.status != 401
+
+    private fun localSummary(
+        day: String,
+        meals: List<MealDto>,
+        cached: DaySummaryDto?,
+    ): DaySummaryDto {
+        val totals = linkedMapOf<String, BigDecimal>()
+        val coverage = linkedMapOf<String, MutableSet<String>>()
+        meals.forEach { meal ->
+            (meal.nutrients + meal.ingredients.flatMap { it.nutrients })
+                .filter { it.basis == "portion" }
+                .forEach { nutrient ->
+                    val value = nutrient.value.toBigDecimalOrNull() ?: return@forEach
+                    totals[nutrient.key] = (totals[nutrient.key] ?: BigDecimal.ZERO) + value
+                    coverage.getOrPut(nutrient.key, ::mutableSetOf).add(meal.id)
+                }
+        }
+        val formatted = totals.mapValues { (_, value) ->
+            value.setScale(2, RoundingMode.HALF_UP).toPlainString()
+        }
+        val core = setOf("energy", "protein", "carbohydrates", "fat", "saturated_fat")
+        return DaySummaryDto(
+            localDay = day,
+            totals = formatted,
+            available = formatted.keys.sorted(),
+            missingCore = (core - formatted.keys).sorted(),
+            coverage = coverage.mapValues { it.value.size },
+            mealCount = meals.size,
+            targets = cached?.targets,
+        )
+    }
 }
+
+private fun MealPayload.reused(request: ReuseRequestPayload): MealPayload = copy(
+    clientId = request.clientId,
+    localDay = request.localDay,
+    eatenAt = request.eatenAt,
+    timezone = request.timezone,
+    mealType = request.mealType,
+    attachmentId = null,
+    version = null,
+)

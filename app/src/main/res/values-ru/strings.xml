@@ -238,4 +238,20 @@
     <string name="history_context">Контекст без интерпретации: %1$s кг · %2$s</string>
     <string name="history_context_hint">Вес и уровень активности показаны только как контекст и не трактуются как причина.</string>
     <string name="open_history">История и календарь</string>
+    <string name="sync_status_title">Офлайн-синхронизация</string>
+    <string name="sync_all_current">Все приёмы пищи синхронизированы.</string>
+    <string name="sync_counts">Ожидают: %1$d · постоянные ошибки: %2$d · конфликты: %3$d</string>
+    <string name="sync_now">Синхронизировать сейчас</string>
+    <string name="sync_last_success">Последняя успешная синхронизация: %1$s</string>
+    <string name="sync_pending">сохранено на этом устройстве · ожидает синхронизации</string>
+    <string name="sync_syncing">синхронизируется</string>
+    <string name="sync_failed_retryable">временная ошибка синхронизации</string>
+    <string name="sync_failed_permanent">постоянная ошибка синхронизации</string>
+    <string name="sync_conflict">конфликт с более новой версией на сервере</string>
+    <string name="sync_retry">Повторить</string>
+    <string name="discard_local_change">Отменить локальное изменение</string>
+    <string name="keep_server_version">Оставить версию сервера</string>
+    <string name="apply_my_version">Применить мою версию</string>
+    <string name="sync_error_code">Техническая причина: %1$s</string>
+    <string name="sync_queue_full">Офлайн-очередь заполнена. Синхронизируйте или отмените неудачные изменения.</string>
 </resources>

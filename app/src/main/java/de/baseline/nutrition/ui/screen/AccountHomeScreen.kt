@@ -1,6 +1,7 @@
 package de.baseline.nutrition.ui.screen
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -14,6 +15,7 @@ import de.baseline.nutrition.domain.auth.AuthRepository
 import de.baseline.nutrition.ui.barcode.BarcodeScreen
 import de.baseline.nutrition.ui.barcode.BarcodeViewModel
 import de.baseline.nutrition.ui.diary.DiaryScreen
+import de.baseline.nutrition.ui.diary.DiaryError
 import de.baseline.nutrition.ui.diary.DiaryViewModel
 import de.baseline.nutrition.ui.history.HistoryScreen
 import de.baseline.nutrition.ui.history.HistoryViewModel
@@ -47,6 +49,11 @@ fun AccountHomeScreen(
     val historyViewModel: HistoryViewModel = viewModel(
         factory = HistoryViewModel.factory(diaryRepository, ioDispatcher),
     )
+    LaunchedEffect(diaryState.error, diaryState.sync.overview.authRequired) {
+        if (diaryState.error == DiaryError.Session || diaryState.sync.overview.authRequired) {
+            onLoggedOut()
+        }
+    }
     var activeFlow by rememberSaveable { mutableStateOf("diary") }
     when (activeFlow) {
         "capture" -> CaptureScreen(

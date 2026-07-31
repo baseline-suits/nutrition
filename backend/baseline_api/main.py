@@ -1066,6 +1066,64 @@ def snapshot(payload: MealInput) -> str:
     return payload.model_dump_json()
 
 
+def mutation_request_hash(payload: MealInput | MealUpdate) -> str:
+    return digest(payload.model_dump_json())
+
+
+def load_repeated_mutation(
+    connection: sqlite3.Connection,
+    user_id: str,
+    idempotency_key: str,
+    operation: str,
+    meal_id: str,
+    request_hash: str,
+) -> sqlite3.Row | None:
+    row = connection.execute(
+        """SELECT * FROM meal_mutations
+           WHERE user_id=? AND idempotency_key=?""",
+        (user_id, idempotency_key),
+    ).fetchone()
+    if not row:
+        return None
+    if (
+        row["operation"] != operation
+        or row["meal_id"] != meal_id
+        or row["request_hash"] != request_hash
+    ):
+        fail(
+            409,
+            "idempotency_conflict",
+            "Der Idempotenzschlüssel wurde bereits anders verwendet.",
+        )
+    return row
+
+
+def record_mutation(
+    connection: sqlite3.Connection,
+    user_id: str,
+    idempotency_key: str,
+    operation: str,
+    meal_id: str,
+    request_hash: str,
+    response_json: str | None,
+) -> None:
+    connection.execute(
+        """INSERT INTO meal_mutations
+           (id,user_id,idempotency_key,operation,meal_id,request_hash,response_json,created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            uid(),
+            user_id,
+            idempotency_key,
+            operation,
+            meal_id,
+            request_hash,
+            response_json,
+            iso(now()),
+        ),
+    )
+
+
 def attach_upload(
     connection: sqlite3.Connection,
     user_id: str,
@@ -2098,29 +2156,74 @@ def create_meal(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     client_id = idempotency_key or payload.client_id
+    if idempotency_key is not None and not 8 <= len(idempotency_key) <= 100:
+        fail(422, "invalid_idempotency_key", "Ungültiger Idempotenzschlüssel.")
     payload = payload.model_copy(update={"client_id": client_id})
+    request_hash = mutation_request_hash(payload)
     with db() as connection:
-        existing = connection.execute(
-            "SELECT id FROM meals WHERE user_id=? AND client_id=?", (user.id, client_id)
-        ).fetchone()
-        if existing:
-            return load_meal(connection, user.id, existing["id"])
         try:
             connection.execute("BEGIN IMMEDIATE")
-            meal_id = insert_meal(connection, user.id, payload)
-            connection.commit()
-        except sqlite3.IntegrityError:
-            connection.rollback()
+            replay = load_repeated_mutation(
+                connection,
+                user.id,
+                client_id,
+                "create",
+                client_id,
+                request_hash,
+            )
+            if replay:
+                connection.commit()
+                return MealOutput.model_validate_json(replay["response_json"])
             existing = connection.execute(
-                "SELECT id FROM meals WHERE user_id=? AND client_id=?", (user.id, client_id)
+                "SELECT id FROM meals WHERE user_id=? AND client_id=?",
+                (user.id, client_id),
             ).fetchone()
             if existing:
-                return load_meal(connection, user.id, existing["id"])
-            raise
+                revision = connection.execute(
+                    """SELECT snapshot_json FROM meal_revisions
+                       WHERE meal_id=? AND version=1""",
+                    (existing["id"],),
+                ).fetchone()
+                if (
+                    not revision
+                    or mutation_request_hash(
+                        MealInput.model_validate_json(revision["snapshot_json"])
+                    )
+                    != request_hash
+                ):
+                    fail(
+                        409,
+                        "idempotency_conflict",
+                        "Der Idempotenzschlüssel wurde bereits anders verwendet.",
+                    )
+                result = load_meal(connection, user.id, existing["id"])
+                record_mutation(
+                    connection,
+                    user.id,
+                    client_id,
+                    "create",
+                    client_id,
+                    request_hash,
+                    result.model_dump_json(),
+                )
+                connection.commit()
+                return result
+            meal_id = insert_meal(connection, user.id, payload)
+            result = load_meal(connection, user.id, meal_id)
+            record_mutation(
+                connection,
+                user.id,
+                client_id,
+                "create",
+                client_id,
+                request_hash,
+                result.model_dump_json(),
+            )
+            connection.commit()
         except Exception:
             connection.rollback()
             raise
-        return load_meal(connection, user.id, meal_id)
+        return result
 
 
 @app.get("/v1/meals/{meal_id}", response_model=MealOutput)
@@ -2131,9 +2234,28 @@ def get_meal(meal_id: str, user: Annotated[UserContext, Depends(current_user)]):
 
 @app.put("/v1/meals/{meal_id}", response_model=MealOutput)
 def update_meal(
-    meal_id: str, payload: MealUpdate, user: Annotated[UserContext, Depends(current_user)]
+    meal_id: str,
+    payload: MealUpdate,
+    user: Annotated[UserContext, Depends(current_user)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
+    if idempotency_key is not None and not 8 <= len(idempotency_key) <= 200:
+        fail(422, "invalid_idempotency_key", "Ungültiger Idempotenzschlüssel.")
+    request_hash = mutation_request_hash(payload)
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if idempotency_key:
+            replay = load_repeated_mutation(
+                connection,
+                user.id,
+                idempotency_key,
+                "update",
+                meal_id,
+                request_hash,
+            )
+            if replay:
+                connection.commit()
+                return MealOutput.model_validate_json(replay["response_json"])
         existing = connection.execute(
             "SELECT * FROM meals WHERE id=? AND user_id=? AND deleted_at IS NULL",
             (meal_id, user.id),
@@ -2142,7 +2264,6 @@ def update_meal(
             fail(404, "not_found", "Mahlzeit nicht gefunden.")
         if existing["version"] != payload.version:
             fail(409, "version_conflict", "Die Mahlzeit wurde zwischenzeitlich geändert.")
-        connection.execute("BEGIN")
         ensure_daily_budget(connection, user.id, payload.local_day, payload.timezone)
         connection.execute("DELETE FROM nutrient_values WHERE meal_id=?", (meal_id,))
         connection.execute("DELETE FROM ingredients WHERE meal_id=?", (meal_id,))
@@ -2240,18 +2361,59 @@ def update_meal(
             "INSERT INTO meal_revisions VALUES (?,?,?,?,?)",
             (uid(), meal_id, next_version, snapshot(payload), stamp),
         )
+        result = load_meal(connection, user.id, meal_id)
+        if idempotency_key:
+            record_mutation(
+                connection,
+                user.id,
+                idempotency_key,
+                "update",
+                meal_id,
+                request_hash,
+                result.model_dump_json(),
+            )
         connection.commit()
-        return load_meal(connection, user.id, meal_id)
+        return result
 
 
 @app.delete("/v1/meals/{meal_id}", status_code=204)
-def delete_meal(meal_id: str, user: Annotated[UserContext, Depends(current_user)]):
+def delete_meal(
+    meal_id: str,
+    user: Annotated[UserContext, Depends(current_user)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+):
+    if idempotency_key is not None and not 8 <= len(idempotency_key) <= 200:
+        fail(422, "invalid_idempotency_key", "Ungültiger Idempotenzschlüssel.")
+    request_hash = digest(f"delete:{meal_id}")
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if idempotency_key:
+            replay = load_repeated_mutation(
+                connection,
+                user.id,
+                idempotency_key,
+                "delete",
+                meal_id,
+                request_hash,
+            )
+            if replay:
+                connection.commit()
+                return
         connection.execute(
             """UPDATE meals SET deleted_at=?,updated_at=?
                WHERE id=? AND user_id=? AND deleted_at IS NULL""",
             (iso(now()), iso(now()), meal_id, user.id),
         )
+        if idempotency_key:
+            record_mutation(
+                connection,
+                user.id,
+                idempotency_key,
+                "delete",
+                meal_id,
+                request_hash,
+                None,
+            )
         connection.commit()
 
 

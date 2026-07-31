@@ -3,6 +3,7 @@ package de.baseline.nutrition.data.auth
 import de.baseline.nutrition.data.network.ApiClient
 import de.baseline.nutrition.data.network.ApiException
 import de.baseline.nutrition.data.session.SecureSessionStore
+import de.baseline.nutrition.data.sync.MealSyncScheduler
 import de.baseline.nutrition.domain.auth.AuthRepository
 import de.baseline.nutrition.domain.session.SessionState
 import kotlinx.serialization.SerialName
@@ -28,6 +29,7 @@ import kotlinx.serialization.Serializable
 class HttpAuthRepository(
     private val api: ApiClient,
     private val store: SecureSessionStore,
+    private val syncScheduler: MealSyncScheduler? = null,
 ) : AuthRepository {
     override suspend fun checkServer() {
         val response = api.request<Unit, HealthResponse>("/health", "GET")
@@ -38,6 +40,7 @@ class HttpAuthRepository(
         if (store.readToken() == null) return SessionState.LoggedOut
         return try {
             val session = api.request<Unit, SessionCheck>("/v1/auth/session", "GET", authenticated = true)
+            store.readUserId()?.let { syncScheduler?.schedule(it) }
             if (session.onboardingComplete) SessionState.Authenticated else SessionState.OnboardingOpen
         } catch (error: ApiException) {
             if (error.status == 401) SessionState.LoggedOut else throw error
@@ -49,6 +52,7 @@ class HttpAuthRepository(
             "/v1/auth/login", "POST", Credentials(username.trim(), password),
         )
         store.writeSession(response.token, response.userId)
+        syncScheduler?.schedule(response.userId)
     }
 
     override suspend fun register(accessCode: String, username: String, password: String, locale: String) {
@@ -56,6 +60,7 @@ class HttpAuthRepository(
             "/v1/auth/register", "POST", Registration(accessCode.trim(), username.trim(), password, locale),
         )
         store.writeSession(response.token, response.userId)
+        syncScheduler?.schedule(response.userId)
     }
 
     override suspend fun logout(allDevices: Boolean) {

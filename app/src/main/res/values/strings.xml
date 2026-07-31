@@ -238,4 +238,20 @@
     <string name="history_context">Sachlicher Kontext: %1$s kg · %2$s</string>
     <string name="history_context_hint">Gewicht und Aktivitätslevel werden nur daneben dargestellt, nicht als Ursache interpretiert.</string>
     <string name="open_history">Verlauf und Kalender</string>
+    <string name="sync_status_title">Offline-Synchronisierung</string>
+    <string name="sync_all_current">Alle Mahlzeiten sind synchronisiert.</string>
+    <string name="sync_counts">%1$d ausstehend · %2$d dauerhaft fehlgeschlagen · %3$d Konflikte</string>
+    <string name="sync_now">Jetzt synchronisieren</string>
+    <string name="sync_last_success">Letzter erfolgreicher Abgleich: %1$s</string>
+    <string name="sync_pending">auf diesem Gerät gespeichert · Synchronisierung ausstehend</string>
+    <string name="sync_syncing">wird synchronisiert</string>
+    <string name="sync_failed_retryable">Synchronisierung vorübergehend fehlgeschlagen</string>
+    <string name="sync_failed_permanent">Synchronisierung dauerhaft fehlgeschlagen</string>
+    <string name="sync_conflict">Konflikt mit einem neueren Serverstand</string>
+    <string name="sync_retry">Erneut versuchen</string>
+    <string name="discard_local_change">Lokale Änderung verwerfen</string>
+    <string name="keep_server_version">Serverstand behalten</string>
+    <string name="apply_my_version">Meine Version anwenden</string>
+    <string name="sync_error_code">Technischer Grund: %1$s</string>
+    <string name="sync_queue_full">Die Offline-Warteschlange ist voll. Synchronisiere oder verwirf fehlgeschlagene Änderungen.</string>
 </resources>
