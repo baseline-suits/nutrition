@@ -33,7 +33,7 @@ class AppContainer(
     val sessionRepository = authRepository
     val profileRepository = ProfileRepository(api)
     val onboardingDraftStore = OnboardingDraftStore(sessionStore)
-    val diaryRepository = DiaryRepository(api)
+    val diaryRepository = DiaryRepository(api, sessionStore)
     val captureRepository = CaptureRepository(api)
     val productRepository = ProductRepository(api)
 }

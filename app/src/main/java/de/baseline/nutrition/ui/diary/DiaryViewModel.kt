@@ -9,6 +9,7 @@ import de.baseline.nutrition.data.diary.DiaryTargets
 import de.baseline.nutrition.data.diary.FavoriteDto
 import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.PrivateFoodDto
+import de.baseline.nutrition.data.diary.toDiaryTargets
 import de.baseline.nutrition.data.network.ApiException
 import de.baseline.nutrition.domain.diary.IngredientDraft
 import de.baseline.nutrition.domain.diary.MealEditorDraft
@@ -74,8 +75,10 @@ class DiaryViewModel(
                     )
                 }
             }.onSuccess { loaded ->
-                mutableState.update {
-                    it.copy(meals = loaded.meals, summary = loaded.summary, targets = loaded.targets,
+                mutableState.update { state ->
+                    val targets = loaded.summary.targets?.toDiaryTargets()
+                        ?: loaded.targets.takeIf { state.selectedDay >= LocalDate.now() }
+                    state.copy(meals = loaded.meals, summary = loaded.summary, targets = targets,
                         favorites = loaded.favorites, loading = false,
                         lastSync = OffsetDateTime.now().toLocalTime().withNano(0).toString())
                 }

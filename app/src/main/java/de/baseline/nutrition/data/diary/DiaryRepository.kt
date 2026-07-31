@@ -1,9 +1,12 @@
 package de.baseline.nutrition.data.diary
 
 import de.baseline.nutrition.data.network.ApiClient
+import de.baseline.nutrition.data.network.ApiException
+import de.baseline.nutrition.data.session.SecureSessionStore
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -105,7 +108,9 @@ data class DaySummaryDto(
     val totals: Map<String, String>,
     val available: List<String>,
     @SerialName("missing_core") val missingCore: List<String>,
+    val coverage: Map<String, Int> = emptyMap(),
     @SerialName("meal_count") val mealCount: Int,
+    val targets: DailyBudgetDto? = null,
 )
 
 @Serializable
@@ -116,6 +121,81 @@ data class DiaryTargets(
     @SerialName("target_fat_g") val fat: String,
     @SerialName("targets_manual") val manual: Int = 0,
 )
+
+@Serializable
+data class DailyBudgetDto(
+    val timezone: String,
+    @SerialName("target_kcal") val energy: String,
+    @SerialName("target_protein_g") val protein: String,
+    @SerialName("target_carbs_g") val carbohydrates: String,
+    @SerialName("target_fat_g") val fat: String,
+    @SerialName("targets_manual") val manual: Boolean,
+    @SerialName("weight_kg") val weightKg: String? = null,
+    @SerialName("activity_level") val activityLevel: String? = null,
+    @SerialName("calculation_version") val calculationVersion: String,
+)
+
+fun DailyBudgetDto.toDiaryTargets() = DiaryTargets(
+    energy = energy,
+    protein = protein,
+    carbohydrates = carbohydrates,
+    fat = fat,
+    manual = if (manual) 1 else 0,
+)
+
+@Serializable
+data class HistoryDayDto(
+    @SerialName("local_day") val localDay: String,
+    val status: String,
+    val totals: Map<String, String>,
+    val coverage: Map<String, Int>,
+    @SerialName("meal_count") val mealCount: Int,
+    val targets: DailyBudgetDto? = null,
+)
+
+@Serializable
+data class HistoryAggregateDto(
+    @SerialName("tracked_days") val trackedDays: Int,
+    @SerialName("complete_days") val completeDays: Int,
+    @SerialName("partial_days") val partialDays: Int,
+    val averages: Map<String, String>,
+    @SerialName("average_denominators") val averageDenominators: Map<String, Int>,
+    @SerialName("target_averages") val targetAverages: Map<String, String>,
+    @SerialName("target_denominators") val targetDenominators: Map<String, Int>,
+    @SerialName("goal_percentages") val goalPercentages: Map<String, String>,
+    @SerialName("goal_denominators") val goalDenominators: Map<String, Int>,
+)
+
+@Serializable
+data class HistoryWeekDto(
+    val start: String,
+    val end: String,
+    @SerialName("tracked_days") val trackedDays: Int,
+    @SerialName("complete_days") val completeDays: Int,
+    @SerialName("partial_days") val partialDays: Int,
+    val averages: Map<String, String>,
+    @SerialName("average_denominators") val averageDenominators: Map<String, Int>,
+    @SerialName("target_averages") val targetAverages: Map<String, String>,
+    @SerialName("target_denominators") val targetDenominators: Map<String, Int>,
+    @SerialName("goal_percentages") val goalPercentages: Map<String, String>,
+    @SerialName("goal_denominators") val goalDenominators: Map<String, Int>,
+)
+
+@Serializable
+data class HistoryResponseDto(
+    val start: String,
+    val end: String,
+    @SerialName("total_days") val totalDays: Int,
+    val days: List<HistoryDayDto>,
+    val summary: HistoryAggregateDto,
+    val weeks: List<HistoryWeekDto>,
+)
+
+data class HistoryLoad(val data: HistoryResponseDto, val cached: Boolean)
+
+interface HistoryDataSource {
+    suspend fun history(days: Int): HistoryLoad
+}
 
 @Serializable
 data class PrivateFoodPayload(
@@ -140,7 +220,12 @@ data class PrivateFoodDto(
     val version: Int,
 )
 
-class DiaryRepository(private val api: ApiClient) {
+class DiaryRepository(
+    private val api: ApiClient,
+    private val sessionStore: SecureSessionStore? = null,
+) : HistoryDataSource {
+    private val historyCache = ConcurrentHashMap<String, HistoryResponseDto>()
+
     suspend fun meals(day: String): List<MealDto> =
         api.request<Unit, List<MealDto>>("/v1/days/$day/meals", "GET", authenticated = true)
 
@@ -228,4 +313,23 @@ class DiaryRepository(private val api: ApiClient) {
 
     suspend fun recentDraft(id: String, payload: ReuseRequestPayload): MealPayload =
         api.request("/v1/meals/$id/draft", "POST", payload, authenticated = true)
+
+    override suspend fun history(days: Int): HistoryLoad {
+        require(days in 1..100)
+        val userId = sessionStore?.readUserId()
+        val cacheKey = userId?.let { "$it:$days" }
+        return try {
+            val response = api.request<Unit, HistoryResponseDto>(
+                "/v1/nutrition/history?days=$days&limit=$days",
+                "GET",
+                authenticated = true,
+            )
+            if (cacheKey != null) historyCache[cacheKey] = response
+            HistoryLoad(response, cached = false)
+        } catch (error: Exception) {
+            if (error is ApiException && error.status == 401) throw error
+            val cached = cacheKey?.let(historyCache::get) ?: throw error
+            HistoryLoad(cached, cached = true)
+        }
+    }
 }

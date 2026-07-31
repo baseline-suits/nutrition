@@ -61,6 +61,7 @@ fun DiaryScreen(
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
     onQuickAdd: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     when {
@@ -73,6 +74,7 @@ fun DiaryScreen(
             ioDispatcher,
             onLoggedOut,
             onQuickAdd,
+            onHistory,
         )
     }
 }
@@ -85,6 +87,7 @@ private fun DayScreen(
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
     onQuickAdd: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
@@ -112,6 +115,12 @@ private fun DayScreen(
             if (state.selectedDay != LocalDate.now()) {
                 TextButton(onClick = { viewModel.selectDay(LocalDate.now()) }) { Text(stringResource(R.string.today)) }
             }
+        }
+        OutlinedButton(
+            onClick = onHistory,
+            modifier = Modifier.testTag("open-history"),
+        ) {
+            Text(stringResource(R.string.open_history))
         }
         if (state.loading && state.meals.isEmpty()) {
             Text(stringResource(R.string.loading_diary))

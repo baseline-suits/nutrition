@@ -81,6 +81,13 @@ OFF_NUTRIENTS = {
 }
 PRODUCT_SCHEMA_VERSION: Literal["off-product/1.0.0"] = "off-product/1.0.0"
 PRODUCT_CORE_NUTRIENTS = {"energy", "protein", "carbohydrates", "fat"}
+HISTORY_NUTRIENTS = ("energy", "protein", "carbohydrates", "fat")
+HISTORY_TARGET_FIELDS = {
+    "energy": "target_kcal",
+    "protein": "target_protein_g",
+    "carbohydrates": "target_carbs_g",
+    "fat": "target_fat_g",
+}
 logger = logging.getLogger("baseline_api")
 Image.MAX_IMAGE_PIXELS = UPLOAD_MAX_PIXELS
 
@@ -473,6 +480,18 @@ class PrivateFoodUpdate(PrivateFoodInput):
     version: int = Field(ge=1)
 
 
+class DailyBudgetSnapshot(BaseModel):
+    timezone: str
+    target_kcal: Decimal
+    target_protein_g: Decimal
+    target_carbs_g: Decimal
+    target_fat_g: Decimal
+    targets_manual: bool
+    weight_kg: Decimal | None
+    activity_level: str | None
+    calculation_version: str
+
+
 class DaySummary(BaseModel):
     local_day: date
     totals: dict[str, str]
@@ -480,6 +499,45 @@ class DaySummary(BaseModel):
     missing_core: list[str]
     coverage: dict[str, int]
     meal_count: int
+    targets: DailyBudgetSnapshot | None = None
+
+
+class NutritionHistoryDay(BaseModel):
+    local_day: date
+    status: Literal["complete", "partial", "none"]
+    totals: dict[str, str]
+    coverage: dict[str, int]
+    meal_count: int
+    targets: DailyBudgetSnapshot | None = None
+
+
+class NutritionHistoryAggregate(BaseModel):
+    tracked_days: int
+    complete_days: int
+    partial_days: int
+    averages: dict[str, str]
+    average_denominators: dict[str, int]
+    target_averages: dict[str, str]
+    target_denominators: dict[str, int]
+    goal_percentages: dict[str, str]
+    goal_denominators: dict[str, int]
+
+
+class NutritionHistoryWeek(NutritionHistoryAggregate):
+    start: date
+    end: date
+
+
+class NutritionHistoryResponse(BaseModel):
+    start: date
+    end: date
+    total_days: int
+    offset: int
+    limit: int
+    has_more: bool
+    days: list[NutritionHistoryDay]
+    summary: NutritionHistoryAggregate
+    weeks: list[NutritionHistoryWeek]
 
 
 class AnalysisRequest(BaseModel):
@@ -1062,11 +1120,77 @@ def detach_meal_uploads(connection: sqlite3.Connection, meal_id: str) -> None:
             )
 
 
+def ensure_daily_budget(
+    connection: sqlite3.Connection,
+    user_id: str,
+    local_day: date,
+    timezone: str,
+) -> None:
+    profile = connection.execute(
+        """SELECT target_kcal,target_protein_g,target_carbs_g,target_fat_g,
+           targets_manual,weight_kg,activity_level,formula_version
+           FROM profiles WHERE user_id=? AND target_kcal IS NOT NULL""",
+        (user_id,),
+    ).fetchone()
+    if not profile:
+        return
+    connection.execute(
+        """INSERT OR IGNORE INTO daily_budget_snapshots
+           (user_id,local_day,timezone,target_kcal,target_protein_g,target_carbs_g,
+            target_fat_g,targets_manual,weight_kg,activity_level,calculation_version,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            user_id,
+            str(local_day),
+            timezone,
+            profile["target_kcal"],
+            profile["target_protein_g"],
+            profile["target_carbs_g"],
+            profile["target_fat_g"],
+            profile["targets_manual"],
+            profile["weight_kg"],
+            profile["activity_level"],
+            profile["formula_version"] or "manual-v1",
+            iso(now()),
+        ),
+    )
+
+
+def daily_budget_from_row(row: sqlite3.Row | None) -> DailyBudgetSnapshot | None:
+    if not row:
+        return None
+    return DailyBudgetSnapshot(
+        timezone=row["timezone"],
+        target_kcal=Decimal(row["target_kcal"]),
+        target_protein_g=Decimal(row["target_protein_g"]),
+        target_carbs_g=Decimal(row["target_carbs_g"]),
+        target_fat_g=Decimal(row["target_fat_g"]),
+        targets_manual=bool(row["targets_manual"]),
+        weight_kg=Decimal(row["weight_kg"]) if row["weight_kg"] is not None else None,
+        activity_level=row["activity_level"],
+        calculation_version=row["calculation_version"],
+    )
+
+
+def load_daily_budget(
+    connection: sqlite3.Connection,
+    user_id: str,
+    local_day: date,
+) -> DailyBudgetSnapshot | None:
+    row = connection.execute(
+        """SELECT * FROM daily_budget_snapshots
+           WHERE user_id=? AND local_day=?""",
+        (user_id, str(local_day)),
+    ).fetchone()
+    return daily_budget_from_row(row)
+
+
 def insert_meal(
     connection: sqlite3.Connection, user_id: str, payload: MealInput, meal_id: str | None = None
 ) -> str:
     meal_id = meal_id or uid()
     stamp = iso(now())
+    ensure_daily_budget(connection, user_id, payload.local_day, payload.timezone)
     connection.execute(
         """INSERT INTO meals (id,user_id,client_id,local_day,eaten_at,timezone,meal_type,name,note,
            capture_method,version,deleted_at,created_at,updated_at)
@@ -2019,6 +2143,7 @@ def update_meal(
         if existing["version"] != payload.version:
             fail(409, "version_conflict", "Die Mahlzeit wurde zwischenzeitlich geändert.")
         connection.execute("BEGIN")
+        ensure_daily_budget(connection, user.id, payload.local_day, payload.timezone)
         connection.execute("DELETE FROM nutrient_values WHERE meal_id=?", (meal_id,))
         connection.execute("DELETE FROM ingredients WHERE meal_id=?", (meal_id,))
         connection.execute("DELETE FROM provenance WHERE meal_id=?", (meal_id,))
@@ -2161,6 +2286,7 @@ def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_us
                WHERE user_id=? AND local_day=? AND deleted_at IS NULL""",
             (user.id, str(local_day)),
         ).fetchone()["count"]
+        targets = load_daily_budget(connection, user.id, local_day)
     totals: dict[str, Decimal] = defaultdict(Decimal)
     coverage: dict[str, set[str]] = defaultdict(set)
     for row in rows:
@@ -2178,6 +2304,162 @@ def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_us
         missing_core=sorted(CORE_NUTRIENTS - set(available)),
         coverage={key: len(meal_ids) for key, meal_ids in sorted(coverage.items())},
         meal_count=count,
+        targets=targets if count else None,
+    )
+
+
+def history_decimal(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def aggregate_history(days: list[NutritionHistoryDay]) -> NutritionHistoryAggregate:
+    actual_sums: dict[str, Decimal] = defaultdict(Decimal)
+    actual_counts: dict[str, int] = defaultdict(int)
+    target_sums: dict[str, Decimal] = defaultdict(Decimal)
+    target_counts: dict[str, int] = defaultdict(int)
+    goal_sums: dict[str, Decimal] = defaultdict(Decimal)
+    goal_counts: dict[str, int] = defaultdict(int)
+    tracked = [day for day in days if day.meal_count > 0]
+    for day in tracked:
+        for nutrient in HISTORY_NUTRIENTS:
+            actual = day.totals.get(nutrient)
+            if actual is not None:
+                actual_value = Decimal(actual)
+                actual_sums[nutrient] += actual_value
+                actual_counts[nutrient] += 1
+            if day.targets is None:
+                continue
+            target_value = getattr(day.targets, HISTORY_TARGET_FIELDS[nutrient])
+            target_sums[nutrient] += target_value
+            target_counts[nutrient] += 1
+            if actual is not None and target_value > 0:
+                goal_sums[nutrient] += Decimal(actual) * Decimal(100) / target_value
+                goal_counts[nutrient] += 1
+    return NutritionHistoryAggregate(
+        tracked_days=len(tracked),
+        complete_days=sum(day.status == "complete" for day in tracked),
+        partial_days=sum(day.status == "partial" for day in tracked),
+        averages={
+            key: history_decimal(actual_sums[key] / count)
+            for key, count in sorted(actual_counts.items())
+        },
+        average_denominators=dict(sorted(actual_counts.items())),
+        target_averages={
+            key: history_decimal(target_sums[key] / count)
+            for key, count in sorted(target_counts.items())
+        },
+        target_denominators=dict(sorted(target_counts.items())),
+        goal_percentages={
+            key: history_decimal(goal_sums[key] / count)
+            for key, count in sorted(goal_counts.items())
+        },
+        goal_denominators=dict(sorted(goal_counts.items())),
+    )
+
+
+def load_nutrition_history(
+    connection: sqlite3.Connection,
+    user_id: str,
+    start: date,
+    end: date,
+) -> list[NutritionHistoryDay]:
+    nutrient_rows = connection.execute(
+        """SELECT m.local_day,m.id meal_id,n.nutrient_key,n.value
+           FROM meals m
+           LEFT JOIN nutrient_values n
+             ON n.meal_id=m.id AND n.basis='portion'
+           WHERE m.user_id=? AND m.local_day BETWEEN ? AND ?
+             AND m.deleted_at IS NULL
+           ORDER BY m.local_day,m.id,n.nutrient_key""",
+        (user_id, str(start), str(end)),
+    ).fetchall()
+    budget_rows = connection.execute(
+        """SELECT * FROM daily_budget_snapshots
+           WHERE user_id=? AND local_day BETWEEN ? AND ?
+           ORDER BY local_day""",
+        (user_id, str(start), str(end)),
+    ).fetchall()
+    meal_ids: dict[str, set[str]] = defaultdict(set)
+    totals: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    nutrient_meals: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for row in nutrient_rows:
+        meal_ids[row["local_day"]].add(row["meal_id"])
+        if row["nutrient_key"] is not None:
+            totals[row["local_day"]][row["nutrient_key"]] += Decimal(row["value"])
+            nutrient_meals[row["local_day"]][row["nutrient_key"]].add(row["meal_id"])
+    budgets = {row["local_day"]: daily_budget_from_row(row) for row in budget_rows}
+    output: list[NutritionHistoryDay] = []
+    current = start
+    while current <= end:
+        key = str(current)
+        count = len(meal_ids[key])
+        day_totals = {
+            nutrient: history_decimal(value) for nutrient, value in sorted(totals[key].items())
+        }
+        coverage = {
+            nutrient: len(values) for nutrient, values in sorted(nutrient_meals[key].items())
+        }
+        complete = count > 0 and all(
+            coverage.get(nutrient, 0) == count for nutrient in HISTORY_NUTRIENTS
+        )
+        status: Literal["complete", "partial", "none"]
+        if not count:
+            status = "none"
+        elif complete:
+            status = "complete"
+        else:
+            status = "partial"
+        output.append(
+            NutritionHistoryDay(
+                local_day=current,
+                status=status,
+                totals=day_totals,
+                coverage=coverage,
+                meal_count=count,
+                targets=budgets.get(key) if count else None,
+            )
+        )
+        current += timedelta(days=1)
+    return output
+
+
+@app.get("/v1/nutrition/history", response_model=NutritionHistoryResponse)
+def nutrition_history(
+    user: Annotated[UserContext, Depends(current_user)],
+    days: int = Query(30, ge=1, le=366),
+    end: date | None = None,
+    limit: int = Query(31, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    range_end = end or now().astimezone(ZoneInfo(user.timezone)).date()
+    range_start = range_end - timedelta(days=days - 1)
+    with db() as connection:
+        history_days = load_nutrition_history(connection, user.id, range_start, range_end)
+    page = history_days[offset : offset + limit]
+    weeks: list[NutritionHistoryWeek] = []
+    grouped: dict[date, list[NutritionHistoryDay]] = defaultdict(list)
+    for history_day in history_days:
+        week_start = history_day.local_day - timedelta(days=history_day.local_day.weekday())
+        grouped[week_start].append(history_day)
+    for week_start, week_days in sorted(grouped.items()):
+        aggregate = aggregate_history(week_days)
+        weeks.append(
+            NutritionHistoryWeek(
+                start=week_start,
+                end=week_start + timedelta(days=6),
+                **aggregate.model_dump(),
+            )
+        )
+    return NutritionHistoryResponse(
+        start=range_start,
+        end=range_end,
+        total_days=len(history_days),
+        offset=offset,
+        limit=limit,
+        has_more=offset + len(page) < len(history_days),
+        days=page,
+        summary=aggregate_history(history_days),
+        weeks=weeks,
     )
 
 

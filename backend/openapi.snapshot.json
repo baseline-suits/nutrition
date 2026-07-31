@@ -264,6 +264,78 @@
         "title": "Credentials",
         "type": "object"
       },
+      "DailyBudgetSnapshot": {
+        "properties": {
+          "activity_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activity Level"
+          },
+          "calculation_version": {
+            "title": "Calculation Version",
+            "type": "string"
+          },
+          "target_carbs_g": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Target Carbs G",
+            "type": "string"
+          },
+          "target_fat_g": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Target Fat G",
+            "type": "string"
+          },
+          "target_kcal": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Target Kcal",
+            "type": "string"
+          },
+          "target_protein_g": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Target Protein G",
+            "type": "string"
+          },
+          "targets_manual": {
+            "title": "Targets Manual",
+            "type": "boolean"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "weight_kg": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Kg"
+          }
+        },
+        "required": [
+          "timezone",
+          "target_kcal",
+          "target_protein_g",
+          "target_carbs_g",
+          "target_fat_g",
+          "targets_manual",
+          "weight_kg",
+          "activity_level",
+          "calculation_version"
+        ],
+        "title": "DailyBudgetSnapshot",
+        "type": "object"
+      },
       "DaySummary": {
         "properties": {
           "available": {
@@ -295,6 +367,16 @@
             },
             "title": "Missing Core",
             "type": "array"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyBudgetSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "totals": {
             "additionalProperties": {
@@ -1305,6 +1387,275 @@
           "id"
         ],
         "title": "NutrientOutput",
+        "type": "object"
+      },
+      "NutritionHistoryAggregate": {
+        "properties": {
+          "average_denominators": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Average Denominators",
+            "type": "object"
+          },
+          "averages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Averages",
+            "type": "object"
+          },
+          "complete_days": {
+            "title": "Complete Days",
+            "type": "integer"
+          },
+          "goal_denominators": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Goal Denominators",
+            "type": "object"
+          },
+          "goal_percentages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Goal Percentages",
+            "type": "object"
+          },
+          "partial_days": {
+            "title": "Partial Days",
+            "type": "integer"
+          },
+          "target_averages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Target Averages",
+            "type": "object"
+          },
+          "target_denominators": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Target Denominators",
+            "type": "object"
+          },
+          "tracked_days": {
+            "title": "Tracked Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tracked_days",
+          "complete_days",
+          "partial_days",
+          "averages",
+          "average_denominators",
+          "target_averages",
+          "target_denominators",
+          "goal_percentages",
+          "goal_denominators"
+        ],
+        "title": "NutritionHistoryAggregate",
+        "type": "object"
+      },
+      "NutritionHistoryDay": {
+        "properties": {
+          "coverage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Coverage",
+            "type": "object"
+          },
+          "local_day": {
+            "format": "date",
+            "title": "Local Day",
+            "type": "string"
+          },
+          "meal_count": {
+            "title": "Meal Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "partial",
+              "none"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyBudgetSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Totals",
+            "type": "object"
+          }
+        },
+        "required": [
+          "local_day",
+          "status",
+          "totals",
+          "coverage",
+          "meal_count"
+        ],
+        "title": "NutritionHistoryDay",
+        "type": "object"
+      },
+      "NutritionHistoryResponse": {
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/NutritionHistoryDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "end": {
+            "format": "date",
+            "title": "End",
+            "type": "string"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "start": {
+            "format": "date",
+            "title": "Start",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/NutritionHistoryAggregate"
+          },
+          "total_days": {
+            "title": "Total Days",
+            "type": "integer"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/NutritionHistoryWeek"
+            },
+            "title": "Weeks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "total_days",
+          "offset",
+          "limit",
+          "has_more",
+          "days",
+          "summary",
+          "weeks"
+        ],
+        "title": "NutritionHistoryResponse",
+        "type": "object"
+      },
+      "NutritionHistoryWeek": {
+        "properties": {
+          "average_denominators": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Average Denominators",
+            "type": "object"
+          },
+          "averages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Averages",
+            "type": "object"
+          },
+          "complete_days": {
+            "title": "Complete Days",
+            "type": "integer"
+          },
+          "end": {
+            "format": "date",
+            "title": "End",
+            "type": "string"
+          },
+          "goal_denominators": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Goal Denominators",
+            "type": "object"
+          },
+          "goal_percentages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Goal Percentages",
+            "type": "object"
+          },
+          "partial_days": {
+            "title": "Partial Days",
+            "type": "integer"
+          },
+          "start": {
+            "format": "date",
+            "title": "Start",
+            "type": "string"
+          },
+          "target_averages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Target Averages",
+            "type": "object"
+          },
+          "target_denominators": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Target Denominators",
+            "type": "object"
+          },
+          "tracked_days": {
+            "title": "Tracked Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tracked_days",
+          "complete_days",
+          "partial_days",
+          "averages",
+          "average_denominators",
+          "target_averages",
+          "target_denominators",
+          "goal_percentages",
+          "goal_denominators",
+          "start",
+          "end"
+        ],
+        "title": "NutritionHistoryWeek",
         "type": "object"
       },
       "PrivateFoodInput": {
@@ -3238,6 +3589,104 @@
           }
         },
         "summary": "Create Favorite"
+      }
+    },
+    "/v1/nutrition/history": {
+      "get": {
+        "operationId": "nutrition_history_v1_nutrition_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 366,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 31,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NutritionHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Nutrition History"
       }
     },
     "/v1/private-foods": {

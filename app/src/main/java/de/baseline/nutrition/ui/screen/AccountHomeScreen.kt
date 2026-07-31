@@ -15,6 +15,8 @@ import de.baseline.nutrition.ui.barcode.BarcodeScreen
 import de.baseline.nutrition.ui.barcode.BarcodeViewModel
 import de.baseline.nutrition.ui.diary.DiaryScreen
 import de.baseline.nutrition.ui.diary.DiaryViewModel
+import de.baseline.nutrition.ui.history.HistoryScreen
+import de.baseline.nutrition.ui.history.HistoryViewModel
 import de.baseline.nutrition.ui.capture.CaptureScreen
 import de.baseline.nutrition.ui.capture.CaptureViewModel
 import de.baseline.nutrition.ui.reuse.ReuseMode
@@ -41,6 +43,9 @@ fun AccountHomeScreen(
     )
     val reuseViewModel: ReuseViewModel = viewModel(
         factory = ReuseViewModel.factory(diaryRepository, ioDispatcher),
+    )
+    val historyViewModel: HistoryViewModel = viewModel(
+        factory = HistoryViewModel.factory(diaryRepository, ioDispatcher),
     )
     var activeFlow by rememberSaveable { mutableStateOf("diary") }
     when (activeFlow) {
@@ -115,12 +120,21 @@ fun AccountHomeScreen(
             },
             onClose = { activeFlow = "diary" },
         )
+        "history" -> HistoryScreen(
+            viewModel = historyViewModel,
+            onSelectDay = { day ->
+                activeFlow = "diary"
+                diaryViewModel.selectDay(day)
+            },
+            onClose = { activeFlow = "diary" },
+        )
         else -> DiaryScreen(
             diaryViewModel,
             authRepository,
             ioDispatcher,
             onLoggedOut,
             onQuickAdd = { activeFlow = "capture" },
+            onHistory = { activeFlow = "history" },
         )
     }
 }
