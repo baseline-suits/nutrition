@@ -10,6 +10,7 @@ Konten, Profile und Mahlzeiten.
 - JDK 17
 - Android SDK 35
 - Android Build Tools 35.0.0
+- Python 3.13
 
 `ANDROID_HOME` muss auf das installierte Android SDK zeigen. Weitere globale Tools sind nicht erforderlich.
 
@@ -57,7 +58,7 @@ Der Zugangscode wird nur beim Erzeugen im Klartext ausgegeben.
 Backendtests:
 
 ```bash
-PYTHONPATH=backend pytest -q backend/tests
+make backend-test
 ```
 
 ## Qualitätsprüfungen
@@ -69,4 +70,4 @@ Die lokal verfügbaren Befehle entsprechen den Pflichtschritten der CI:
 ./scripts/check-translations.sh
 ```
 
-Eine Übersicht der Gates, Artefakte und noch blockierten Backend-Prüfungen steht in [docs/quality-gates.md](docs/quality-gates.md).
+Eine Übersicht der Gates und Artefakte steht in [docs/quality-gates.md](docs/quality-gates.md).

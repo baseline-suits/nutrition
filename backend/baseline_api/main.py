@@ -9,26 +9,45 @@ import threading
 import uuid
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-UTC = timezone.utc
+UTC = UTC
 PASSWORDS = PasswordHasher()
 CORE_NUTRIENTS = {"energy", "protein", "carbohydrates", "fat", "saturated_fat"}
 NUTRIENT_KEYS = CORE_NUTRIENTS | {
-    "fiber", "sugar", "salt", "sodium", "calcium", "iron", "magnesium",
-    "potassium", "vitamin_a", "vitamin_b12", "vitamin_c", "vitamin_d",
+    "fiber",
+    "sugar",
+    "salt",
+    "sodium",
+    "calcium",
+    "iron",
+    "magnesium",
+    "potassium",
+    "vitamin_a",
+    "vitamin_b12",
+    "vitamin_c",
+    "vitamin_d",
 }
 SOURCES = {"user", "ai_estimate", "open_food_facts", "derived", "manual"}
-CAPTURE_METHODS = {"description", "camera", "gallery", "barcode", "search", "favorite", "manual", "ai"}
+CAPTURE_METHODS = {
+    "description",
+    "camera",
+    "gallery",
+    "barcode",
+    "search",
+    "favorite",
+    "manual",
+    "ai",
+}
 MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack", "other"}
 UNITS = {"g", "kg", "mg", "µg", "ml", "l", "kcal", "kj", "piece", "portion"}
 BASES = {"portion", "100g", "100ml"}
@@ -99,7 +118,7 @@ class ApiError(BaseModel):
     field: str | None = None
 
 
-def fail(http_status: int, code: str, message: str, field: str | None = None):
+def fail(http_status: int, code: str, message: str, field: str | None = None) -> NoReturn:
     raise HTTPException(http_status, ApiError(code=code, message=message, field=field).model_dump())
 
 
@@ -158,9 +177,14 @@ def create_session(connection: sqlite3.Connection, user_id: str) -> SessionRespo
         "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, NULL)",
         (uid(), user_id, digest(token), iso(now()), iso(expires)),
     )
-    user = connection.execute("SELECT onboarding_complete FROM users WHERE id = ?", (user_id,)).fetchone()
+    user = connection.execute(
+        "SELECT onboarding_complete FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
     return SessionResponse(
-        token=token, expires_at=expires, onboarding_complete=bool(user["onboarding_complete"]), user_id=user_id
+        token=token,
+        expires_at=expires,
+        onboarding_complete=bool(user["onboarding_complete"]),
+        user_id=user_id,
     )
 
 
@@ -178,8 +202,12 @@ def current_user(authorization: Annotated[str | None, Header()] = None) -> UserC
     if not row or row["revoked_at"] or datetime.fromisoformat(row["expires_at"]) <= now():
         fail(401, "invalid_session", "Die Sitzung ist abgelaufen oder wurde widerrufen.")
     return UserContext(
-        id=row["id"], username=row["username"], locale=row["locale"], timezone=row["timezone"],
-        onboarding_complete=bool(row["onboarding_complete"]), session_id=row["session_id"],
+        id=row["id"],
+        username=row["username"],
+        locale=row["locale"],
+        timezone=row["timezone"],
+        onboarding_complete=bool(row["onboarding_complete"]),
+        session_id=row["session_id"],
     )
 
 
@@ -195,7 +223,11 @@ class NutrientInput(BaseModel):
     @field_validator("value", mode="before")
     @classmethod
     def localized_value(cls, value):
-        return value.replace("\u00a0", "").replace(" ", "").replace(",", ".") if isinstance(value, str) else value
+        return (
+            value.replace("\u00a0", "").replace(" ", "").replace(",", ".")
+            if isinstance(value, str)
+            else value
+        )
 
     @field_validator("key")
     @classmethod
@@ -238,7 +270,11 @@ class IngredientInput(BaseModel):
     @field_validator("amount", mode="before")
     @classmethod
     def localized_amount(cls, value):
-        return value.replace("\u00a0", "").replace(" ", "").replace(",", ".") if isinstance(value, str) else value
+        return (
+            value.replace("\u00a0", "").replace(" ", "").replace(",", ".")
+            if isinstance(value, str)
+            else value
+        )
 
     @field_validator("unit")
     @classmethod
@@ -299,13 +335,13 @@ class NutrientOutput(NutrientInput):
 
 class IngredientOutput(IngredientInput):
     id: str
-    nutrients: list[NutrientOutput]
+    nutrients: list[NutrientOutput]  # type: ignore[assignment]
 
 
 class MealOutput(MealInput):
     id: str
     version: int
-    ingredients: list[IngredientOutput]
+    ingredients: list[IngredientOutput]  # type: ignore[assignment]
     totals: dict[str, str]
     created_at: datetime
     updated_at: datetime
@@ -322,7 +358,11 @@ class PrivateFoodInput(BaseModel):
     @field_validator("default_amount", mode="before")
     @classmethod
     def localized_amount(cls, value):
-        return value.replace("\u00a0", "").replace(" ", "").replace(",", ".") if isinstance(value, str) else value
+        return (
+            value.replace("\u00a0", "").replace(" ", "").replace(",", ".")
+            if isinstance(value, str)
+            else value
+        )
 
     @field_validator("unit")
     @classmethod
@@ -382,36 +422,76 @@ def snapshot(payload: MealInput) -> str:
     return payload.model_dump_json()
 
 
-def insert_meal(connection: sqlite3.Connection, user_id: str, payload: MealInput, meal_id: str | None = None) -> str:
+def insert_meal(
+    connection: sqlite3.Connection, user_id: str, payload: MealInput, meal_id: str | None = None
+) -> str:
     meal_id = meal_id or uid()
     stamp = iso(now())
     connection.execute(
         """INSERT INTO meals (id,user_id,client_id,local_day,eaten_at,timezone,meal_type,name,note,
            capture_method,version,deleted_at,created_at,updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,1,NULL,?,?)""",
-        (meal_id, user_id, payload.client_id, str(payload.local_day), iso(payload.eaten_at), payload.timezone,
-         payload.meal_type, payload.name, payload.note, payload.capture_method, stamp, stamp),
+        (
+            meal_id,
+            user_id,
+            payload.client_id,
+            str(payload.local_day),
+            iso(payload.eaten_at),
+            payload.timezone,
+            payload.meal_type,
+            payload.name,
+            payload.note,
+            payload.capture_method,
+            stamp,
+            stamp,
+        ),
     )
     for nutrient in payload.nutrients:
         connection.execute(
             "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (uid(), meal_id, None, nutrient.key, str(nutrient.value), nutrient.unit,
-             nutrient.basis, nutrient.source,
-             int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}), nutrient.accuracy),
+            (
+                uid(),
+                meal_id,
+                None,
+                nutrient.key,
+                str(nutrient.value),
+                nutrient.unit,
+                nutrient.basis,
+                nutrient.source,
+                int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
+                nutrient.accuracy,
+            ),
         )
     for position, ingredient in enumerate(payload.ingredients):
         ingredient_id = uid()
         connection.execute(
             "INSERT INTO ingredients VALUES (?,?,?,?,?,?,?,?)",
-            (ingredient_id, meal_id, position, ingredient.original_name, ingredient.normalized_name,
-             ingredient.preparation, str(ingredient.amount), ingredient.unit, ),
+            (
+                ingredient_id,
+                meal_id,
+                position,
+                ingredient.original_name,
+                ingredient.normalized_name,
+                ingredient.preparation,
+                str(ingredient.amount),
+                ingredient.unit,
+            ),
         )
         for nutrient in ingredient.nutrients:
             connection.execute(
                 "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (uid(), meal_id, ingredient_id, nutrient.key, str(nutrient.value), nutrient.unit,
-                 nutrient.basis, nutrient.source,
-                 int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}), nutrient.accuracy),
+                (
+                    uid(),
+                    meal_id,
+                    ingredient_id,
+                    nutrient.key,
+                    str(nutrient.value),
+                    nutrient.unit,
+                    nutrient.basis,
+                    nutrient.source,
+                    int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
+                    nutrient.accuracy,
+                ),
             )
     if payload.provenance_source:
         if payload.provenance_source not in SOURCES:
@@ -421,7 +501,8 @@ def insert_meal(connection: sqlite3.Connection, user_id: str, payload: MealInput
             (uid(), meal_id, payload.provenance_source, payload.external_reference, stamp),
         )
     connection.execute(
-        "INSERT INTO meal_revisions VALUES (?,?,?,?,?)", (uid(), meal_id, 1, snapshot(payload), stamp)
+        "INSERT INTO meal_revisions VALUES (?,?,?,?,?)",
+        (uid(), meal_id, 1, snapshot(payload), stamp),
     )
     return meal_id
 
@@ -522,14 +603,10 @@ def load_meals(
     output: list[MealOutput] = []
     for meal_id in visible_ids:
         meal = meal_by_id[meal_id]
-        ingredient_outputs = [
-            IngredientOutput(**value) for value in ingredients[meal_id].values()
-        ]
+        ingredient_outputs = [IngredientOutput(**value) for value in ingredients[meal_id].values()]
         meal_nutrients = direct_nutrients[meal_id]
         all_nutrients = meal_nutrients + [
-            nutrient
-            for ingredient in ingredient_outputs
-            for nutrient in ingredient.nutrients
+            nutrient for ingredient in ingredient_outputs for nutrient in ingredient.nutrients
         ]
         source = provenance.get(meal_id)
         output.append(
@@ -563,7 +640,9 @@ def load_meal(connection: sqlite3.Connection, user_id: str, meal_id: str) -> Mea
     return meals[0]
 
 
-def load_private_food(connection: sqlite3.Connection, user_id: str, food_id: str) -> PrivateFoodOutput:
+def load_private_food(
+    connection: sqlite3.Connection, user_id: str, food_id: str
+) -> PrivateFoodOutput:
     food = connection.execute(
         "SELECT * FROM private_foods WHERE id=? AND user_id=?", (food_id, user_id)
     ).fetchone()
@@ -573,13 +652,26 @@ def load_private_food(connection: sqlite3.Connection, user_id: str, food_id: str
         "SELECT * FROM private_food_nutrients WHERE food_id=? ORDER BY nutrient_key", (food_id,)
     ).fetchall()
     return PrivateFoodOutput(
-        id=food["id"], name=food["name"], brand=food["brand"],
-        default_amount=Decimal(food["default_amount"]), unit=food["unit"], basis=food["basis"],
-        nutrients=[NutrientInput(
-            key=row["nutrient_key"], value=Decimal(row["value"]), unit=row["unit"],
-            basis=row["basis"], source="user", locked=True, accuracy="exact",
-        ) for row in rows],
-        version=food["version"], created_at=datetime.fromisoformat(food["created_at"]),
+        id=food["id"],
+        name=food["name"],
+        brand=food["brand"],
+        default_amount=Decimal(food["default_amount"]),
+        unit=food["unit"],
+        basis=food["basis"],
+        nutrients=[
+            NutrientInput(
+                key=row["nutrient_key"],
+                value=Decimal(row["value"]),
+                unit=row["unit"],
+                basis=row["basis"],
+                source="user",
+                locked=True,
+                accuracy="exact",
+            )
+            for row in rows
+        ],
+        version=food["version"],
+        created_at=datetime.fromisoformat(food["created_at"]),
         updated_at=datetime.fromisoformat(food["updated_at"]),
     )
 
@@ -590,7 +682,14 @@ def write_private_food_nutrients(
     for nutrient in nutrients:
         connection.execute(
             "INSERT INTO private_food_nutrients VALUES (?,?,?,?,?,?)",
-            (uid(), food_id, nutrient.key, str(nutrient.value), nutrient.unit, nutrient.basis, ),
+            (
+                uid(),
+                food_id,
+                nutrient.key,
+                str(nutrient.value),
+                nutrient.unit,
+                nutrient.basis,
+            ),
         )
 
 
@@ -616,13 +715,29 @@ def register(payload: Registration, request: Request):
             code = connection.execute(
                 "SELECT * FROM access_codes WHERE code_hash=?", (digest(payload.access_code),)
             ).fetchone()
-            if not code or code["consumed_at"] or code["revoked_at"] or datetime.fromisoformat(code["expires_at"]) <= now():
-                fail(400, "invalid_access_code", "Der Zugangscode ist ungültig oder nicht mehr verwendbar.")
+            if (
+                not code
+                or code["consumed_at"]
+                or code["revoked_at"]
+                or datetime.fromisoformat(code["expires_at"]) <= now()
+            ):
+                fail(
+                    400,
+                    "invalid_access_code",
+                    "Der Zugangscode ist ungültig oder nicht mehr verwendbar.",
+                )
             user_id = uid()
             connection.execute(
                 "INSERT INTO users VALUES (?,?,?,?,?,?,?)",
-                (user_id, payload.username, PASSWORDS.hash(payload.password), payload.locale,
-                 payload.timezone, 0, iso(now())),
+                (
+                    user_id,
+                    payload.username,
+                    PASSWORDS.hash(payload.password),
+                    payload.locale,
+                    payload.timezone,
+                    0,
+                    iso(now()),
+                ),
             )
             changed = connection.execute(
                 """UPDATE access_codes SET consumed_at=?,consumed_by=?
@@ -641,12 +756,19 @@ def register(payload: Registration, request: Request):
 
 @app.post("/v1/auth/login", response_model=SessionResponse)
 def login(payload: Credentials, request: Request):
-    auth_limit.check(f"login:{request.client.host if request.client else 'unknown'}:{payload.username.lower()}")
+    auth_limit.check(
+        f"login:{request.client.host if request.client else 'unknown'}:{payload.username.lower()}"
+    )
     with db() as connection:
-        user = connection.execute("SELECT * FROM users WHERE username=?", (payload.username,)).fetchone()
+        user = connection.execute(
+            "SELECT * FROM users WHERE username=?", (payload.username,)
+        ).fetchone()
         valid = False
         try:
-            PASSWORDS.verify(user["password_hash"] if user else PASSWORDS.hash("dummy-password-value"), payload.password)
+            PASSWORDS.verify(
+                user["password_hash"] if user else PASSWORDS.hash("dummy-password-value"),
+                payload.password,
+            )
             valid = user is not None
         except VerifyMismatchError:
             pass
@@ -665,14 +787,19 @@ def session(user: Annotated[UserContext, Depends(current_user)]):
 @app.post("/v1/auth/logout", status_code=204)
 def logout(user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
-        connection.execute("UPDATE sessions SET revoked_at=? WHERE id=?", (iso(now()), user.session_id))
+        connection.execute(
+            "UPDATE sessions SET revoked_at=? WHERE id=?", (iso(now()), user.session_id)
+        )
         connection.commit()
 
 
 @app.post("/v1/auth/logout-all", status_code=204)
 def logout_all(user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
-        connection.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (iso(now()), user.id))
+        connection.execute(
+            "UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+            (iso(now()), user.id),
+        )
         connection.commit()
 
 
@@ -680,7 +807,9 @@ def logout_all(user: Annotated[UserContext, Depends(current_user)]):
 def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(current_user)]):
     stamp = iso(now())
     formula = None if payload.manual else "mifflin-st-jeor-v1"
-    calculation = json.dumps(payload.calculation, separators=(",", ":")) if payload.calculation else None
+    calculation = (
+        json.dumps(payload.calculation, separators=(",", ":")) if payload.calculation else None
+    )
     with db() as connection:
         connection.execute(
             """INSERT INTO profiles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -692,11 +821,24 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
                target_kcal=excluded.target_kcal,target_protein_g=excluded.target_protein_g,
                target_carbs_g=excluded.target_carbs_g,target_fat_g=excluded.target_fat_g,
                targets_manual=excluded.targets_manual,updated_at=excluded.updated_at""",
-            (user.id, str(payload.birth_date) if payload.birth_date else None, payload.biological_input,
-             str(payload.height_cm) if payload.height_cm else None, str(payload.weight_kg) if payload.weight_kg else None,
-             stamp if payload.weight_kg else None, payload.activity_level, payload.goal_direction, formula, calculation,
-             str(payload.target_kcal), str(payload.target_protein_g), str(payload.target_carbs_g),
-             str(payload.target_fat_g), int(payload.manual), stamp),
+            (
+                user.id,
+                str(payload.birth_date) if payload.birth_date else None,
+                payload.biological_input,
+                str(payload.height_cm) if payload.height_cm else None,
+                str(payload.weight_kg) if payload.weight_kg else None,
+                stamp if payload.weight_kg else None,
+                payload.activity_level,
+                payload.goal_direction,
+                formula,
+                calculation,
+                str(payload.target_kcal),
+                str(payload.target_protein_g),
+                str(payload.target_carbs_g),
+                str(payload.target_fat_g),
+                int(payload.manual),
+                stamp,
+            ),
         )
         connection.execute(
             "UPDATE users SET locale=?,timezone=?,onboarding_complete=1 WHERE id=?",
@@ -710,7 +852,10 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
 def get_profile(user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
         profile = connection.execute(
-            "SELECT p.*,u.locale,u.timezone FROM users u LEFT JOIN profiles p ON p.user_id=u.id WHERE u.id=?", (user.id,)
+            """SELECT p.*,u.locale,u.timezone
+               FROM users u LEFT JOIN profiles p ON p.user_id=u.id
+               WHERE u.id=?""",
+            (user.id,),
         ).fetchone()
     if not profile or not profile["target_kcal"]:
         fail(404, "not_found", "Profil nicht gefunden.")
@@ -718,14 +863,26 @@ def get_profile(user: Annotated[UserContext, Depends(current_user)]):
 
 
 @app.post("/v1/private-foods", response_model=PrivateFoodOutput, status_code=201)
-def create_private_food(payload: PrivateFoodInput, user: Annotated[UserContext, Depends(current_user)]):
+def create_private_food(
+    payload: PrivateFoodInput, user: Annotated[UserContext, Depends(current_user)]
+):
     food_id = uid()
     stamp = iso(now())
     with db() as connection:
         connection.execute(
             "INSERT INTO private_foods VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (food_id, user.id, payload.name, payload.brand, str(payload.default_amount), payload.unit,
-             payload.basis, 1, stamp, stamp),
+            (
+                food_id,
+                user.id,
+                payload.name,
+                payload.brand,
+                str(payload.default_amount),
+                payload.unit,
+                payload.basis,
+                1,
+                stamp,
+                stamp,
+            ),
         )
         write_private_food_nutrients(connection, food_id, payload.nutrients)
         connection.commit()
@@ -733,8 +890,10 @@ def create_private_food(payload: PrivateFoodInput, user: Annotated[UserContext, 
 
 
 @app.get("/v1/private-foods", response_model=list[PrivateFoodOutput])
-def list_private_foods(user: Annotated[UserContext, Depends(current_user)],
-                       query: str | None = Query(default=None, max_length=200)):
+def list_private_foods(
+    user: Annotated[UserContext, Depends(current_user)],
+    query: str | None = Query(default=None, max_length=200),
+):
     with db() as connection:
         if query:
             rows = connection.execute(
@@ -744,7 +903,9 @@ def list_private_foods(user: Annotated[UserContext, Depends(current_user)],
             ).fetchall()
         else:
             rows = connection.execute(
-                "SELECT id FROM private_foods WHERE user_id=? ORDER BY name COLLATE NOCASE,id LIMIT 100",
+                """SELECT id FROM private_foods
+                   WHERE user_id=?
+                   ORDER BY name COLLATE NOCASE,id LIMIT 100""",
                 (user.id,),
             ).fetchall()
         return [load_private_food(connection, user.id, row["id"]) for row in rows]
@@ -757,8 +918,9 @@ def get_private_food(food_id: str, user: Annotated[UserContext, Depends(current_
 
 
 @app.put("/v1/private-foods/{food_id}", response_model=PrivateFoodOutput)
-def update_private_food(food_id: str, payload: PrivateFoodUpdate,
-                        user: Annotated[UserContext, Depends(current_user)]):
+def update_private_food(
+    food_id: str, payload: PrivateFoodUpdate, user: Annotated[UserContext, Depends(current_user)]
+):
     stamp = iso(now())
     with db() as connection:
         current = connection.execute(
@@ -769,10 +931,20 @@ def update_private_food(food_id: str, payload: PrivateFoodUpdate,
         if current["version"] != payload.version:
             fail(409, "version_conflict", "Das Lebensmittel wurde zwischenzeitlich geändert.")
         connection.execute(
-            """UPDATE private_foods SET name=?,brand=?,default_amount=?,unit=?,basis=?,version=?,updated_at=?
+            """UPDATE private_foods
+               SET name=?,brand=?,default_amount=?,unit=?,basis=?,version=?,updated_at=?
                WHERE id=? AND user_id=?""",
-            (payload.name, payload.brand, str(payload.default_amount), payload.unit, payload.basis,
-             payload.version + 1, stamp, food_id, user.id),
+            (
+                payload.name,
+                payload.brand,
+                str(payload.default_amount),
+                payload.unit,
+                payload.basis,
+                payload.version + 1,
+                stamp,
+                food_id,
+                user.id,
+            ),
         )
         connection.execute("DELETE FROM private_food_nutrients WHERE food_id=?", (food_id,))
         write_private_food_nutrients(connection, food_id, payload.nutrients)
@@ -780,7 +952,9 @@ def update_private_food(food_id: str, payload: PrivateFoodUpdate,
         return load_private_food(connection, user.id, food_id)
 
 
-@app.post("/v1/private-foods/{food_id}/duplicate", response_model=PrivateFoodOutput, status_code=201)
+@app.post(
+    "/v1/private-foods/{food_id}/duplicate", response_model=PrivateFoodOutput, status_code=201
+)
 def duplicate_private_food(food_id: str, user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
         original = load_private_food(connection, user.id, food_id)
@@ -788,8 +962,18 @@ def duplicate_private_food(food_id: str, user: Annotated[UserContext, Depends(cu
         stamp = iso(now())
         connection.execute(
             "INSERT INTO private_foods VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (copy_id, user.id, f"{original.name} (Kopie)", original.brand, str(original.default_amount),
-             original.unit, original.basis, 1, stamp, stamp),
+            (
+                copy_id,
+                user.id,
+                f"{original.name} (Kopie)",
+                original.brand,
+                str(original.default_amount),
+                original.unit,
+                original.basis,
+                1,
+                stamp,
+                stamp,
+            ),
         )
         write_private_food_nutrients(connection, copy_id, original.nutrients)
         connection.commit()
@@ -808,8 +992,11 @@ def delete_private_food(food_id: str, user: Annotated[UserContext, Depends(curre
 
 
 @app.post("/v1/meals", response_model=MealOutput, status_code=201)
-def create_meal(payload: MealInput, user: Annotated[UserContext, Depends(current_user)],
-                idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None):
+def create_meal(
+    payload: MealInput,
+    user: Annotated[UserContext, Depends(current_user)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+):
     client_id = idempotency_key or payload.client_id
     payload = payload.model_copy(update={"client_id": client_id})
     with db() as connection:
@@ -843,10 +1030,13 @@ def get_meal(meal_id: str, user: Annotated[UserContext, Depends(current_user)]):
 
 
 @app.put("/v1/meals/{meal_id}", response_model=MealOutput)
-def update_meal(meal_id: str, payload: MealUpdate, user: Annotated[UserContext, Depends(current_user)]):
+def update_meal(
+    meal_id: str, payload: MealUpdate, user: Annotated[UserContext, Depends(current_user)]
+):
     with db() as connection:
         existing = connection.execute(
-            "SELECT * FROM meals WHERE id=? AND user_id=? AND deleted_at IS NULL", (meal_id, user.id)
+            "SELECT * FROM meals WHERE id=? AND user_id=? AND deleted_at IS NULL",
+            (meal_id, user.id),
         ).fetchone()
         if not existing:
             fail(404, "not_found", "Mahlzeit nicht gefunden.")
@@ -861,31 +1051,66 @@ def update_meal(meal_id: str, payload: MealUpdate, user: Annotated[UserContext, 
         connection.execute(
             """UPDATE meals SET client_id=?,local_day=?,eaten_at=?,timezone=?,meal_type=?,name=?,
                note=?,capture_method=?,version=?,updated_at=? WHERE id=?""",
-            (payload.client_id, str(payload.local_day), iso(payload.eaten_at), payload.timezone, payload.meal_type,
-             payload.name, payload.note, payload.capture_method, next_version, stamp, meal_id),
+            (
+                payload.client_id,
+                str(payload.local_day),
+                iso(payload.eaten_at),
+                payload.timezone,
+                payload.meal_type,
+                payload.name,
+                payload.note,
+                payload.capture_method,
+                next_version,
+                stamp,
+                meal_id,
+            ),
         )
         for nutrient in payload.nutrients:
             connection.execute(
                 "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (uid(), meal_id, None, nutrient.key, str(nutrient.value), nutrient.unit,
-                 nutrient.basis, nutrient.source,
-                 int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
-                 nutrient.accuracy),
+                (
+                    uid(),
+                    meal_id,
+                    None,
+                    nutrient.key,
+                    str(nutrient.value),
+                    nutrient.unit,
+                    nutrient.basis,
+                    nutrient.source,
+                    int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
+                    nutrient.accuracy,
+                ),
             )
         for position, ingredient in enumerate(payload.ingredients):
             ingredient_id = uid()
             connection.execute(
                 "INSERT INTO ingredients VALUES (?,?,?,?,?,?,?,?)",
-                (ingredient_id, meal_id, position, ingredient.original_name, ingredient.normalized_name,
-                 ingredient.preparation, str(ingredient.amount), ingredient.unit),
+                (
+                    ingredient_id,
+                    meal_id,
+                    position,
+                    ingredient.original_name,
+                    ingredient.normalized_name,
+                    ingredient.preparation,
+                    str(ingredient.amount),
+                    ingredient.unit,
+                ),
             )
             for nutrient in ingredient.nutrients:
                 connection.execute(
                     "INSERT INTO nutrient_values VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (uid(), meal_id, ingredient_id, nutrient.key, str(nutrient.value), nutrient.unit,
-                     nutrient.basis, nutrient.source,
-                     int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
-                     nutrient.accuracy),
+                    (
+                        uid(),
+                        meal_id,
+                        ingredient_id,
+                        nutrient.key,
+                        str(nutrient.value),
+                        nutrient.unit,
+                        nutrient.basis,
+                        nutrient.source,
+                        int(nutrient.locked or nutrient.source in {"user", "open_food_facts"}),
+                        nutrient.accuracy,
+                    ),
                 )
         connection.execute(
             "INSERT INTO meal_revisions VALUES (?,?,?,?,?)",
@@ -899,15 +1124,20 @@ def update_meal(meal_id: str, payload: MealUpdate, user: Annotated[UserContext, 
 def delete_meal(meal_id: str, user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
         connection.execute(
-            "UPDATE meals SET deleted_at=?,updated_at=? WHERE id=? AND user_id=? AND deleted_at IS NULL",
+            """UPDATE meals SET deleted_at=?,updated_at=?
+               WHERE id=? AND user_id=? AND deleted_at IS NULL""",
             (iso(now()), iso(now()), meal_id, user.id),
         )
         connection.commit()
 
 
 @app.get("/v1/days/{local_day}/meals", response_model=list[MealOutput])
-def list_meals(local_day: date, user: Annotated[UserContext, Depends(current_user)],
-               limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
+def list_meals(
+    local_day: date,
+    user: Annotated[UserContext, Depends(current_user)],
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
     with db() as connection:
         rows = connection.execute(
             """SELECT id FROM meals WHERE user_id=? AND local_day=? AND deleted_at IS NULL
@@ -921,12 +1151,15 @@ def list_meals(local_day: date, user: Annotated[UserContext, Depends(current_use
 def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
         rows = connection.execute(
-            """SELECT n.meal_id,n.nutrient_key,n.value FROM nutrient_values n JOIN meals m ON m.id=n.meal_id
-               WHERE m.user_id=? AND m.local_day=? AND m.deleted_at IS NULL AND n.basis='portion'""",
+            """SELECT n.meal_id,n.nutrient_key,n.value
+               FROM nutrient_values n JOIN meals m ON m.id=n.meal_id
+               WHERE m.user_id=? AND m.local_day=?
+                 AND m.deleted_at IS NULL AND n.basis='portion'""",
             (user.id, str(local_day)),
         ).fetchall()
         count = connection.execute(
-            "SELECT COUNT(*) count FROM meals WHERE user_id=? AND local_day=? AND deleted_at IS NULL",
+            """SELECT COUNT(*) count FROM meals
+               WHERE user_id=? AND local_day=? AND deleted_at IS NULL""",
             (user.id, str(local_day)),
         ).fetchone()["count"]
     totals: dict[str, Decimal] = defaultdict(Decimal)
@@ -934,17 +1167,27 @@ def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_us
     for row in rows:
         totals[row["nutrient_key"]] += Decimal(row["value"])
         coverage[row["nutrient_key"]].add(row["meal_id"])
-    formatted = {key: str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) for key, value in totals.items()}
+    formatted = {
+        key: str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        for key, value in totals.items()
+    }
     available = sorted(formatted)
-    return DaySummary(local_day=local_day, totals=formatted, available=available,
-                      missing_core=sorted(CORE_NUTRIENTS - set(available)),
-                      coverage={key: len(meal_ids) for key, meal_ids in sorted(coverage.items())},
-                      meal_count=count)
+    return DaySummary(
+        local_day=local_day,
+        totals=formatted,
+        available=available,
+        missing_core=sorted(CORE_NUTRIENTS - set(available)),
+        coverage={key: len(meal_ids) for key, meal_ids in sorted(coverage.items())},
+        meal_count=count,
+    )
 
 
 @app.post("/v1/meals/{meal_id}/duplicate", response_model=MealOutput, status_code=201)
-def duplicate_meal(meal_id: str, user: Annotated[UserContext, Depends(current_user)],
-                   idempotency_key: Annotated[str, Header(alias="Idempotency-Key")]):
+def duplicate_meal(
+    meal_id: str,
+    user: Annotated[UserContext, Depends(current_user)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+):
     with db() as connection:
         original = load_meal(connection, user.id, meal_id)
         existing = connection.execute(

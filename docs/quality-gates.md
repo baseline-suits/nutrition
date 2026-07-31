@@ -19,23 +19,24 @@ Die Branch-Protection für `main` muss im GitHub-Repository die Jobs `android` u
 - Debug-/Beta-APK: 7 Tage
 - Lint- und Unit-Testberichte: 14 Tage
 - Instrumentierungsergebnisse: 14 Tage
-- Backend-Test-, Migrations- und OpenAPI-Artefakte: nach Aktivierung 14 Tage
+- Backend-Test-, Migrations- und OpenAPI-Artefakte: 14 Tage
 
 Die interne Beta-APK wird als `baseline-nutrition-<version>-beta-<commit>.apk` abgelegt. Ein Main-Build veröffentlicht nichts automatisch im Play Store.
 
 ## Backend-Vertrag
 
-ID-306 ist in Linear durch ID-284 und ID-286 blockiert. Sobald `backend/pyproject.toml` vorhanden ist, aktiviert die CI automatisch den Backend-Job. Das Backend stellt dafür folgende reproduzierbare Make-Ziele bereit:
+Der Backend-Job ist verbindlich aktiv. Das Backend stellt dafür folgende
+reproduzierbare Make-Ziele bereit:
 
 | Ziel | Erwartete Prüfung |
 | --- | --- |
-| `ci-install` | Lockfile-verifizierte Installation |
+| `ci-install` | Installation ausschließlich aus vollständig gepinnten Abhängigkeiten |
 | `ci-format` | Formatierung |
 | `ci-lint` | Linting |
 | `ci-types` | Typprüfung |
 | `ci-unit` | Unit-Tests ohne externe Produktivzugriffe |
 | `ci-api` | API- und Nutzerisolations-Tests |
-| `ci-database` | Integrationstests auf temporärem PostgreSQL |
+| `ci-database` | Integrationstests auf einer frischen temporären SQLite-Datenbank |
 | `ci-migrations` | leere Datenbank und Upgrade vom vorherigen Schema |
 | `ci-openapi` | OpenAPI-Contract nach `artifacts/openapi.json` |
 
@@ -44,4 +45,3 @@ Die Tests verwenden ausschließlich Fixtures/Fakes für OpenAI/OpenRouter, Open 
 ## Flaky Tests
 
 Pflichttests werden nicht automatisch wiederholt. Ein instabiler Test bleibt rot, bis die Ursache behoben oder der Test mit dokumentierter Begründung aus dem Pflichtpfad genommen wurde.
-

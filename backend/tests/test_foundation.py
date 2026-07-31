@@ -176,9 +176,7 @@ def test_complex_roundtrip_bulk_day_and_delete(tmp_path, monkeypatch):
             payload["name"] = f"Mahlzeit {index}"
             response = client.post("/v1/meals", json=payload, headers=auth(token))
             assert response.status_code == 201
-        listed = client.get(
-            "/v1/days/2026-07-31/meals?limit=50", headers=auth(token)
-        )
+        listed = client.get("/v1/days/2026-07-31/meals?limit=50", headers=auth(token))
         assert listed.status_code == 200
         assert len(listed.json()) == 50
 
@@ -198,9 +196,7 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
     monkeypatch.setattr(main.settings, "database", empty)
     migrate()
     with sqlite3.connect(empty) as connection:
-        versions = {
-            row[0] for row in connection.execute("SELECT version FROM schema_migrations")
-        }
+        versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
     assert versions == {"001_initial.sql", "002_private_foods.sql"}
 
     previous = tmp_path / "previous.db"
@@ -218,9 +214,5 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
     monkeypatch.setattr(main.settings, "database", previous)
     migrate()
     with sqlite3.connect(previous) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM private_foods"
-        ).fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations"
-        ).fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM private_foods").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
