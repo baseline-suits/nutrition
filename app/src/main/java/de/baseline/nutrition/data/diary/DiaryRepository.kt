@@ -132,6 +132,8 @@ data class DiaryTargets(
 @Serializable
 data class DailyBudgetDto(
     val timezone: String,
+    @SerialName("budget_mode") val budgetMode: String = "fixed",
+    @SerialName("base_target_kcal") val baseEnergy: String? = null,
     @SerialName("target_kcal") val energy: String,
     @SerialName("target_protein_g") val protein: String,
     @SerialName("target_carbs_g") val carbohydrates: String,
@@ -140,7 +142,18 @@ data class DailyBudgetDto(
     @SerialName("weight_kg") val weightKg: String? = null,
     @SerialName("activity_level") val activityLevel: String? = null,
     @SerialName("calculation_version") val calculationVersion: String,
+    @SerialName("activity_status") val activityStatus: String = "not_synced",
+    @SerialName("activity_kcal") val activityEnergy: String? = null,
+    @SerialName("activity_factor") val activityFactor: String = "0.5",
+    @SerialName("activity_cap_kcal") val activityCapEnergy: String = "500",
+    @SerialName("activity_contribution_kcal") val activityContributionEnergy: String = "0",
+    @SerialName("budget_calculation_version")
+    val budgetCalculationVersion: String = "fixed-budget-v1",
+    @SerialName("budget_updated_at") val budgetUpdatedAt: String? = null,
 )
+
+@Serializable
+data class CalorieBudgetModePayload(val mode: String)
 
 fun DailyBudgetDto.toDiaryTargets() = DiaryTargets(
     energy = energy,
@@ -291,6 +304,16 @@ class DiaryRepository(
             if (!canUseCache(error)) throw error
             manager.cachedTargets() ?: throw error
         }
+    }
+
+    suspend fun setBudgetMode(mode: String): DailyBudgetDto {
+        require(mode == "fixed" || mode == "dynamic")
+        return api.request(
+            "/v1/calorie-budget/mode",
+            "PUT",
+            CalorieBudgetModePayload(mode),
+            authenticated = true,
+        )
     }
 
     suspend fun save(payload: MealPayload, mealId: String? = null): MealDto {

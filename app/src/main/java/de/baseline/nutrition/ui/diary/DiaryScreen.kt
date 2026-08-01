@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import de.baseline.nutrition.R
+import de.baseline.nutrition.data.diary.DailyBudgetDto
 import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.NutrientDto
 import de.baseline.nutrition.data.network.ApiException
@@ -51,6 +52,8 @@ import de.baseline.nutrition.domain.diary.MealEditorDraft
 import de.baseline.nutrition.domain.diary.NutrientFields
 import de.baseline.nutrition.domain.diary.PrivateFoodEditorDraft
 import de.baseline.nutrition.domain.diary.parseLocalizedDecimal
+import de.baseline.nutrition.domain.health.HealthAvailability
+import de.baseline.nutrition.domain.health.HealthPermissionState
 import de.baseline.nutrition.data.sync.MealOperationStatus
 import de.baseline.nutrition.data.sync.MealSyncInfo
 import de.baseline.nutrition.data.sync.MealSyncOverview
@@ -74,6 +77,9 @@ fun DiaryScreen(
     onQuickAdd: () -> Unit,
     onHistory: () -> Unit,
     onHealthConnect: () -> Unit,
+    healthConnectionLoading: Boolean,
+    healthAvailability: HealthAvailability,
+    activeCaloriesPermission: HealthPermissionState?,
 ) {
     val state by viewModel.state.collectAsState()
     when {
@@ -88,6 +94,9 @@ fun DiaryScreen(
             onQuickAdd,
             onHistory,
             onHealthConnect,
+            healthConnectionLoading,
+            healthAvailability,
+            activeCaloriesPermission,
         )
     }
 }
@@ -102,6 +111,9 @@ private fun DayScreen(
     onQuickAdd: () -> Unit,
     onHistory: () -> Unit,
     onHealthConnect: () -> Unit,
+    healthConnectionLoading: Boolean,
+    healthAvailability: HealthAvailability,
+    activeCaloriesPermission: HealthPermissionState?,
 ) {
     val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
@@ -155,7 +167,13 @@ private fun DayScreen(
         if (state.loading && state.meals.isEmpty()) {
             Text(stringResource(R.string.loading_diary))
         } else {
-            ProgressOverview(state)
+            ProgressOverview(
+                state = state,
+                healthConnectionLoading = healthConnectionLoading,
+                healthAvailability = healthAvailability,
+                activeCaloriesPermission = activeCaloriesPermission,
+                onBudgetMode = viewModel::setBudgetMode,
+            )
             state.error?.let { ErrorText(it) }
             if (state.meals.isEmpty()) {
                 Text(stringResource(R.string.empty_day_title), fontWeight = FontWeight.Bold)
@@ -399,13 +417,30 @@ internal fun AccountDeletionFinishedDialog(
 }
 
 @Composable
-private fun ProgressOverview(state: DiaryUiState) {
+private fun ProgressOverview(
+    state: DiaryUiState,
+    healthConnectionLoading: Boolean,
+    healthAvailability: HealthAvailability,
+    activeCaloriesPermission: HealthPermissionState?,
+    onBudgetMode: (String) -> Unit,
+) {
     val summary = state.summary ?: return
     val targets = state.targets
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(BaselineSpacing.medium), verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
             Text(stringResource(R.string.daily_progress), fontWeight = FontWeight.Bold)
             ProgressLine(R.string.energy, summary.totals["energy"], targets?.energy, "kcal")
+            summary.targets?.let { budget ->
+                CalorieBudgetBreakdown(
+                    budget = budget,
+                    eatenEnergy = summary.totals["energy"],
+                    canChangeMode = state.selectedDay == LocalDate.now(),
+                    healthConnectionLoading = healthConnectionLoading,
+                    healthAvailability = healthAvailability,
+                    activeCaloriesPermission = activeCaloriesPermission,
+                    onModeChange = onBudgetMode,
+                )
+            }
             ProgressLine(R.string.protein, summary.totals["protein"], targets?.protein, "g")
             ProgressLine(R.string.carbohydrates, summary.totals["carbohydrates"], targets?.carbohydrates, "g")
             ProgressLine(R.string.fat, summary.totals["fat"], targets?.fat, "g")
@@ -416,6 +451,125 @@ private fun ProgressOverview(state: DiaryUiState) {
         }
     }
 }
+
+@Composable
+internal fun CalorieBudgetBreakdown(
+    budget: DailyBudgetDto,
+    eatenEnergy: String?,
+    canChangeMode: Boolean,
+    healthConnectionLoading: Boolean,
+    healthAvailability: HealthAvailability,
+    activeCaloriesPermission: HealthPermissionState?,
+    onModeChange: (String) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val localHealthDisabled = !healthConnectionLoading &&
+        (healthAvailability != HealthAvailability.Available ||
+            activeCaloriesPermission != HealthPermissionState.Granted)
+    val activityStatus = if (localHealthDisabled) "disabled" else budget.activityStatus
+    HorizontalDivider()
+    Text(
+        stringResource(
+            R.string.calorie_budget_mode_value,
+            stringResource(
+                if (budget.budgetMode == "dynamic") {
+                    R.string.dynamic_budget
+                } else {
+                    R.string.fixed_budget
+                },
+            ),
+        ),
+        fontWeight = FontWeight.Bold,
+    )
+    Text(
+        stringResource(
+            if (budget.budgetMode == "dynamic") {
+                R.string.dynamic_budget_description
+            } else {
+                R.string.fixed_budget_description
+            },
+        ),
+    )
+    if (canChangeMode) {
+        Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+            listOf("fixed", "dynamic").forEach { mode ->
+                FilterChip(
+                    selected = budget.budgetMode == mode,
+                    onClick = { if (mode != budget.budgetMode) onModeChange(mode) },
+                    label = {
+                        Text(
+                            stringResource(
+                                if (mode == "dynamic") {
+                                    R.string.dynamic_budget
+                                } else {
+                                    R.string.fixed_budget
+                                },
+                            ),
+                        )
+                    },
+                    modifier = Modifier.testTag("budget-mode-$mode"),
+                )
+            }
+        }
+    }
+    Text(
+        stringResource(activityStatusLabel(activityStatus)),
+        modifier = Modifier.testTag("budget-activity-status-$activityStatus"),
+    )
+    TextButton(
+        onClick = { expanded = !expanded },
+        modifier = Modifier.testTag("budget-details-toggle"),
+    ) {
+        Text(
+            stringResource(
+                if (expanded) R.string.hide_budget_calculation
+                else R.string.show_budget_calculation,
+            ),
+        )
+    }
+    if (expanded) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
+            modifier = Modifier.testTag("budget-calculation"),
+        ) {
+            Text(stringResource(R.string.budget_eaten, eatenEnergy.displayEnergy()))
+            Text(
+                stringResource(
+                    R.string.budget_base_target,
+                    (budget.baseEnergy ?: budget.energy).displayEnergy(),
+                ),
+            )
+            Text(
+                stringResource(
+                    R.string.budget_activity_value,
+                    budget.activityEnergy.displayEnergy(),
+                ),
+            )
+            Text(stringResource(R.string.budget_activity_factor, budget.activityFactor))
+            Text(stringResource(R.string.budget_activity_cap, budget.activityCapEnergy.displayEnergy()))
+            Text(
+                stringResource(
+                    R.string.budget_activity_contribution,
+                    budget.activityContributionEnergy.displayEnergy(),
+                ),
+            )
+            Text(stringResource(R.string.budget_final_target, budget.energy.displayEnergy()))
+            Text(stringResource(R.string.calorie_budget_example))
+        }
+    }
+}
+
+private fun activityStatusLabel(status: String): Int = when (status) {
+    "missing" -> R.string.budget_status_missing
+    "partial" -> R.string.budget_status_partial
+    "ready" -> R.string.budget_status_ready
+    "conflict" -> R.string.budget_status_conflict
+    "disabled" -> R.string.budget_status_disabled
+    else -> R.string.budget_status_not_synced
+}
+
+private fun String?.displayEnergy(): String =
+    this?.toBigDecimalOrNull()?.display() ?: "–"
 
 @Composable
 private fun ProgressLine(label: Int, currentText: String?, targetText: String?, unit: String) {

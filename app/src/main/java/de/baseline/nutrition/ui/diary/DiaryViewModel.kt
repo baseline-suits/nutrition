@@ -232,6 +232,11 @@ class DiaryViewModel(
         repository.syncNow()
     }
 
+    fun setBudgetMode(mode: String) {
+        if (mutableState.value.selectedDay != LocalDate.now()) return
+        mutateAndRefresh { repository.setBudgetMode(mode) }
+    }
+
     fun retrySync(operationId: String) = mutateAndRefresh {
         repository.retrySync(operationId)
     }

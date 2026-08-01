@@ -284,6 +284,23 @@
         "title": "AnalysisRequest",
         "type": "object"
       },
+      "CalorieBudgetModeInput": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "fixed",
+              "dynamic"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "CalorieBudgetModeInput",
+        "type": "object"
+      },
       "Credentials": {
         "properties": {
           "password": {
@@ -309,6 +326,33 @@
       },
       "DailyBudgetSnapshot": {
         "properties": {
+          "activity_cap_kcal": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Activity Cap Kcal",
+            "type": "string"
+          },
+          "activity_contribution_kcal": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Activity Contribution Kcal",
+            "type": "string"
+          },
+          "activity_factor": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Activity Factor",
+            "type": "string"
+          },
+          "activity_kcal": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activity Kcal"
+          },
           "activity_level": {
             "anyOf": [
               {
@@ -319,6 +363,39 @@
               }
             ],
             "title": "Activity Level"
+          },
+          "activity_status": {
+            "enum": [
+              "not_synced",
+              "missing",
+              "partial",
+              "ready",
+              "conflict"
+            ],
+            "title": "Activity Status",
+            "type": "string"
+          },
+          "base_target_kcal": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Base Target Kcal",
+            "type": "string"
+          },
+          "budget_calculation_version": {
+            "title": "Budget Calculation Version",
+            "type": "string"
+          },
+          "budget_mode": {
+            "enum": [
+              "fixed",
+              "dynamic"
+            ],
+            "title": "Budget Mode",
+            "type": "string"
+          },
+          "budget_updated_at": {
+            "format": "date-time",
+            "title": "Budget Updated At",
+            "type": "string"
           },
           "calculation_version": {
             "title": "Calculation Version",
@@ -367,6 +444,8 @@
         },
         "required": [
           "timezone",
+          "budget_mode",
+          "base_target_kcal",
           "target_kcal",
           "target_protein_g",
           "target_carbs_g",
@@ -374,7 +453,14 @@
           "targets_manual",
           "weight_kg",
           "activity_level",
-          "calculation_version"
+          "calculation_version",
+          "activity_status",
+          "activity_kcal",
+          "activity_factor",
+          "activity_cap_kcal",
+          "activity_contribution_kcal",
+          "budget_calculation_version",
+          "budget_updated_at"
         ],
         "title": "DailyBudgetSnapshot",
         "type": "object"
@@ -2852,6 +2938,15 @@
             ],
             "title": "Calculation"
           },
+          "calorie_budget_mode": {
+            "default": "fixed",
+            "enum": [
+              "fixed",
+              "dynamic"
+            ],
+            "title": "Calorie Budget Mode",
+            "type": "string"
+          },
           "goal_direction": {
             "anyOf": [
               {
@@ -3599,6 +3694,62 @@
           }
         },
         "summary": "Session"
+      }
+    },
+    "/v1/calorie-budget/mode": {
+      "put": {
+        "operationId": "save_calorie_budget_mode_v1_calorie_budget_mode_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalorieBudgetModeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyBudgetSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Calorie Budget Mode"
       }
     },
     "/v1/days/{local_day}/meals": {

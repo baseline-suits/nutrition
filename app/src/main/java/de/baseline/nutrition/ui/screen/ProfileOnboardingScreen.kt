@@ -65,6 +65,7 @@ fun ProfileOnboardingScreen(
     var protein by rememberSaveable { mutableStateOf(restored.protein) }
     var carbs by rememberSaveable { mutableStateOf(restored.carbs) }
     var fat by rememberSaveable { mutableStateOf(restored.fat) }
+    var calorieBudgetMode by rememberSaveable { mutableStateOf(restored.calorieBudgetMode) }
     var error by rememberSaveable { mutableStateOf(false) }
     var saving by rememberSaveable { mutableStateOf(false) }
     var showAccountDeletion by rememberSaveable { mutableStateOf(false) }
@@ -90,6 +91,7 @@ fun ProfileOnboardingScreen(
         protein = protein,
         carbs = carbs,
         fat = fat,
+        calorieBudgetMode = calorieBudgetMode,
     )
 
     LaunchedEffect(Unit) {
@@ -178,6 +180,26 @@ fun ProfileOnboardingScreen(
             fat = it
             draftStore.save(currentDraft().copy(fat = it))
         }
+        Choice(
+            R.string.calorie_budget_mode,
+            calorieBudgetMode,
+            listOf("fixed", "dynamic"),
+        ) {
+            calorieBudgetMode = it
+            draftStore.save(currentDraft().copy(calorieBudgetMode = it))
+        }
+        Text(
+            stringResource(
+                if (calorieBudgetMode == "dynamic") {
+                    R.string.dynamic_budget_description
+                } else {
+                    R.string.fixed_budget_description
+                },
+            ),
+        )
+        if (calorieBudgetMode == "dynamic") {
+            Text(stringResource(R.string.calorie_budget_example))
+        }
         Text(stringResource(R.string.goal_disclaimer))
         if (error) Text(stringResource(R.string.onboarding_validation_error))
         Button(enabled = !saving, onClick = {
@@ -200,6 +222,7 @@ fun ProfileOnboardingScreen(
                     targetCarbs = carbs.toDouble().toString(),
                     targetFat = fat.toDouble().toString(),
                     manual = manual,
+                    calorieBudgetMode = calorieBudgetMode,
                     calculation = calculation?.let {
                         mapOf(
                             "formula_version" to it.formulaVersion,
@@ -312,5 +335,7 @@ private fun optionLabel(value: String): Int = when (value) {
     "very_active" -> R.string.very_active
     "maintain" -> R.string.maintain
     "deficit" -> R.string.deficit
+    "fixed" -> R.string.fixed_budget
+    "dynamic" -> R.string.dynamic_budget
     else -> R.string.surplus
 }

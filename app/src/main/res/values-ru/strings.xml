@@ -58,6 +58,12 @@
     <string name="target_protein">Цель по белку (г)</string>
     <string name="target_carbs">Цель по углеводам (г)</string>
     <string name="target_fat">Цель по жирам (г)</string>
+    <string name="calorie_budget_mode">Дневной бюджет калорий</string>
+    <string name="fixed_budget">Фиксированный</string>
+    <string name="dynamic_budget">Динамический</string>
+    <string name="fixed_budget_description">Базовая цель не меняется. Активные калории показываются только как контекст.</string>
+    <string name="dynamic_budget_description">Добавляется половина надёжно синхронизированных активных калорий, но не более 500 ккал. Отсутствующие, частичные или противоречивые данные не увеличивают цель.</string>
+    <string name="calorie_budget_example">Пример: база 2 000 ккал + 50 % от 400 активных ккал = 2 200 ккал.</string>
     <string name="goal_disclaimer">Расчёт — прозрачное предложение, а не медицинская рекомендация.</string>
     <string name="onboarding_validation_error">Проверьте введённые данные и единицы.</string>
     <string name="finish_onboarding">Завершить настройку</string>
@@ -77,6 +83,22 @@
     <string name="missing_values">Нет данных: %1$s</string>
     <string name="manual_goal_source">Источник цели: вручную</string>
     <string name="formula_goal_source">Источник цели: формула</string>
+    <string name="calorie_budget_mode_value">Бюджет калорий: %1$s</string>
+    <string name="show_budget_calculation">Показать расчёт</string>
+    <string name="hide_budget_calculation">Скрыть расчёт</string>
+    <string name="budget_eaten">Съедено: %1$s ккал</string>
+    <string name="budget_base_target">Базовая цель: %1$s ккал</string>
+    <string name="budget_activity_value">Активные калории: %1$s ккал</string>
+    <string name="budget_activity_factor">Коэффициент учёта: %1$s</string>
+    <string name="budget_activity_cap">Ограничение: %1$s ккал</string>
+    <string name="budget_activity_contribution">Учтённая доля активности: %1$s ккал</string>
+    <string name="budget_final_target">Итоговый дневной бюджет: %1$s ккал</string>
+    <string name="budget_status_not_synced">Активные калории ещё не синхронизированы.</string>
+    <string name="budget_status_missing">Синхронизация выполнена, но за этот день нет активных калорий.</string>
+    <string name="budget_status_partial">Данные об активности синхронизированы лишь частично и не учитываются.</string>
+    <string name="budget_status_ready">Активные калории синхронизированы полностью и без конфликтов.</string>
+    <string name="budget_status_conflict">Источники активности противоречат друг другу. Устраните конфликт в Health Connect.</string>
+    <string name="budget_status_disabled">Активные калории отключены в Health Connect или доступ к ним не предоставлен.</string>
     <string name="remaining_value">Осталось %1$s %2$s</string>
     <string name="exceeded_value">Выше цели на %1$s %2$s</string>
     <string name="breakfast">Завтрак</string>

@@ -18,6 +18,7 @@ data class OnboardingDraft(
     val protein: String = "120",
     val carbs: String = "220",
     val fat: String = "70",
+    val calorieBudgetMode: String = "fixed",
 )
 
 class OnboardingDraftStore(private val sessionStore: SecureSessionStore) {

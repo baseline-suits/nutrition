@@ -13,6 +13,7 @@ import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.product.ProductRepository
 import de.baseline.nutrition.domain.auth.AuthRepository
 import de.baseline.nutrition.domain.health.HealthRepository
+import de.baseline.nutrition.domain.health.HealthDataType
 import de.baseline.nutrition.ui.barcode.BarcodeScreen
 import de.baseline.nutrition.ui.barcode.BarcodeViewModel
 import de.baseline.nutrition.ui.diary.DiaryScreen
@@ -56,6 +57,7 @@ fun AccountHomeScreen(
     val healthViewModel: HealthConnectViewModel = viewModel(
         factory = HealthConnectViewModel.factory(healthRepository, ioDispatcher),
     )
+    val healthState by healthViewModel.state.collectAsState()
     LaunchedEffect(diaryState.error, diaryState.sync.overview.authRequired) {
         if (diaryState.error == DiaryError.Session || diaryState.sync.overview.authRequired) {
             onLoggedOut()
@@ -154,6 +156,9 @@ fun AccountHomeScreen(
             onQuickAdd = { activeFlow = "capture" },
             onHistory = { activeFlow = "history" },
             onHealthConnect = { activeFlow = "health" },
+            healthConnectionLoading = healthState.loading,
+            healthAvailability = healthState.availability,
+            activeCaloriesPermission = healthState.permissions[HealthDataType.ActiveCalories],
         )
     }
 }

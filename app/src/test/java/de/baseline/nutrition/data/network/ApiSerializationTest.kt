@@ -2,10 +2,14 @@ package de.baseline.nutrition.data.network
 
 import de.baseline.nutrition.data.diary.MealPayload
 import de.baseline.nutrition.data.diary.NutrientDto
+import de.baseline.nutrition.data.diary.DailyBudgetDto
 import de.baseline.nutrition.data.health.HealthSyncBatchPayload
 import de.baseline.nutrition.data.health.HealthSyncRecordPayload
 import de.baseline.nutrition.data.health.HealthSyncSectionPayload
+import de.baseline.nutrition.data.profile.ProfileRequest
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -69,5 +73,64 @@ class ApiSerializationTest {
         assertTrue(encoded.contains("\"external_record_id\":\"record-1\""))
         assertTrue(encoded.contains("\"start_offset_seconds\""))
         assertTrue(encoded.contains("\"complete\":true"))
+    }
+
+    @Test
+    fun profileAndDailyBudgetUseVersionedCalorieBudgetContract() {
+        val profile = ProfileRequest(
+            locale = "de",
+            timezone = "Europe/Berlin",
+            targetKcal = "2000",
+            targetProtein = "120",
+            targetCarbs = "220",
+            targetFat = "70",
+            manual = true,
+            calorieBudgetMode = "dynamic",
+        )
+
+        val encoded = ApiJson.encodeToString(profile)
+        assertTrue(encoded.contains("\"calorie_budget_mode\":\"dynamic\""))
+
+        val decoded = ApiJson.decodeFromString<DailyBudgetDto>(
+            """{
+                "timezone":"Europe/Berlin",
+                "budget_mode":"dynamic",
+                "base_target_kcal":"2000",
+                "target_kcal":"2225",
+                "target_protein_g":"120",
+                "target_carbs_g":"220",
+                "target_fat_g":"70",
+                "targets_manual":true,
+                "calculation_version":"manual-v1",
+                "activity_status":"ready",
+                "activity_kcal":"450.5",
+                "activity_factor":"0.5",
+                "activity_cap_kcal":"500",
+                "activity_contribution_kcal":"225.25",
+                "budget_calculation_version":"active-calories-budget-v1",
+                "budget_updated_at":"2026-08-01T12:00:00Z"
+            }""".trimIndent(),
+        )
+        assertEquals("dynamic", decoded.budgetMode)
+        assertEquals("225.25", decoded.activityContributionEnergy)
+        assertEquals("2225", decoded.energy)
+    }
+
+    @Test
+    fun cachedBudgetWithoutNewFieldsRemainsReadableAsFixed() {
+        val decoded = ApiJson.decodeFromString<DailyBudgetDto>(
+            """{
+                "timezone":"Europe/Berlin",
+                "target_kcal":"2000",
+                "target_protein_g":"120",
+                "target_carbs_g":"220",
+                "target_fat_g":"70",
+                "targets_manual":true,
+                "calculation_version":"manual-v1"
+            }""".trimIndent(),
+        )
+
+        assertEquals("fixed", decoded.budgetMode)
+        assertEquals("not_synced", decoded.activityStatus)
     }
 }

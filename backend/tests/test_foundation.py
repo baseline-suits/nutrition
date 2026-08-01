@@ -208,6 +208,7 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
         "008_meal_mutation_idempotency.sql",
         "009_data_deletion.sql",
         "010_health_sync.sql",
+        "011_calorie_budget.sql",
     }
 
     previous = tmp_path / "previous.db"
@@ -242,4 +243,4 @@ def test_migrations_apply_to_empty_and_previous_schema(tmp_path, monkeypatch):
     with sqlite3.connect(previous) as connection:
         assert connection.execute("SELECT COUNT(*) FROM private_foods").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM favorites").fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 10
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 11

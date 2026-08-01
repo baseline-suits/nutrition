@@ -109,6 +109,9 @@ HEALTH_MAX_WINDOW = timedelta(days=30)
 HEALTH_MAX_RECORD_AGE = timedelta(days=3650)
 HEALTH_FUTURE_TOLERANCE = timedelta(days=1)
 HEALTH_ORIGIN_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$")
+CALORIE_BUDGET_FACTOR = Decimal("0.5")
+CALORIE_BUDGET_CAP = Decimal("500")
+CALORIE_BUDGET_VERSION = "active-calories-budget-v1"
 logger = logging.getLogger("baseline_api")
 Image.MAX_IMAGE_PIXELS = UPLOAD_MAX_PIXELS
 
@@ -535,6 +538,8 @@ class PrivateFoodUpdate(PrivateFoodInput):
 
 class DailyBudgetSnapshot(BaseModel):
     timezone: str
+    budget_mode: Literal["fixed", "dynamic"]
+    base_target_kcal: Decimal
     target_kcal: Decimal
     target_protein_g: Decimal
     target_carbs_g: Decimal
@@ -543,6 +548,13 @@ class DailyBudgetSnapshot(BaseModel):
     weight_kg: Decimal | None
     activity_level: str | None
     calculation_version: str
+    activity_status: Literal["not_synced", "missing", "partial", "ready", "conflict"]
+    activity_kcal: Decimal | None
+    activity_factor: Decimal
+    activity_cap_kcal: Decimal
+    activity_contribution_kcal: Decimal
+    budget_calculation_version: str
+    budget_updated_at: datetime
 
 
 class DaySummary(BaseModel):
@@ -945,6 +957,7 @@ class ProfileInput(BaseModel):
     target_fat_g: Decimal = Field(ge=0, le=500)
     manual: bool
     calculation: dict | None = None
+    calorie_budget_mode: Literal["fixed", "dynamic"] = "fixed"
 
     @field_validator("timezone")
     @classmethod
@@ -954,6 +967,10 @@ class ProfileInput(BaseModel):
         except ZoneInfoNotFoundError as error:
             raise ValueError("Unbekannte Zeitzone") from error
         return value
+
+
+class CalorieBudgetModeInput(BaseModel):
+    mode: Literal["fixed", "dynamic"]
 
 
 class HealthSegmentInput(BaseModel):
@@ -1639,21 +1656,183 @@ def ensure_daily_budget(
 ) -> None:
     profile = connection.execute(
         """SELECT target_kcal,target_protein_g,target_carbs_g,target_fat_g,
-           targets_manual,weight_kg,activity_level,formula_version
+           targets_manual,weight_kg,activity_level,formula_version,calorie_budget_mode
            FROM profiles WHERE user_id=? AND target_kcal IS NOT NULL""",
         (user_id,),
     ).fetchone()
     if not profile:
         return
+    activity_status, activity_kcal = daily_activity_context(
+        connection,
+        user_id,
+        local_day,
+        timezone,
+    )
+    contribution, final_target = calculate_calorie_budget(
+        Decimal(profile["target_kcal"]),
+        profile["calorie_budget_mode"],
+        activity_status,
+        activity_kcal,
+    )
+    stamp = iso(now())
     connection.execute(
         """INSERT OR IGNORE INTO daily_budget_snapshots
            (user_id,local_day,timezone,target_kcal,target_protein_g,target_carbs_g,
-            target_fat_g,targets_manual,weight_kg,activity_level,calculation_version,created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            target_fat_g,targets_manual,weight_kg,activity_level,calculation_version,created_at,
+            budget_mode,base_target_kcal,activity_status,activity_kcal,activity_factor,
+            activity_cap_kcal,activity_contribution_kcal,budget_calculation_version,
+            budget_updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             user_id,
             str(local_day),
             timezone,
+            health_decimal(final_target),
+            profile["target_protein_g"],
+            profile["target_carbs_g"],
+            profile["target_fat_g"],
+            profile["targets_manual"],
+            profile["weight_kg"],
+            profile["activity_level"],
+            profile["formula_version"] or "manual-v1",
+            stamp,
+            profile["calorie_budget_mode"],
+            profile["target_kcal"],
+            activity_status,
+            health_decimal(activity_kcal) if activity_kcal is not None else None,
+            health_decimal(CALORIE_BUDGET_FACTOR),
+            health_decimal(CALORIE_BUDGET_CAP),
+            health_decimal(contribution),
+            CALORIE_BUDGET_VERSION,
+            stamp,
+        ),
+    )
+
+
+def daily_activity_context(
+    connection: sqlite3.Connection,
+    user_id: str,
+    local_day: date,
+    timezone: str,
+) -> tuple[Literal["not_synced", "missing", "partial", "ready", "conflict"], Decimal | None]:
+    partial = connection.execute(
+        """SELECT 1 FROM health_sync_partial_days
+           WHERE user_id=? AND data_type='active_calories' AND local_day=? LIMIT 1""",
+        (user_id, str(local_day)),
+    ).fetchone()
+    zone = ZoneInfo(timezone)
+    synchronized = any(
+        datetime.fromisoformat(row["window_end"]).astimezone(zone).date() >= local_day
+        for row in connection.execute(
+            """SELECT window_end FROM health_sync_cursors
+               WHERE user_id=? AND data_type='active_calories'""",
+            (user_id,),
+        )
+    )
+    aggregate = connection.execute(
+        """SELECT status,value FROM health_daily_aggregates
+           WHERE user_id=? AND data_type='active_calories' AND local_day=?""",
+        (user_id, str(local_day)),
+    ).fetchone()
+    if aggregate:
+        if aggregate["status"] == "ready" and aggregate["value"] is not None:
+            activity_kcal = max(Decimal(aggregate["value"]), Decimal(0))
+            return ("ready" if synchronized and not partial else "partial"), activity_kcal
+        return "conflict", None
+    if partial:
+        return "partial", None
+    return ("missing" if synchronized else "not_synced"), None
+
+
+def calculate_calorie_budget(
+    base_target: Decimal,
+    mode: Literal["fixed", "dynamic"] | str,
+    activity_status: str,
+    activity_kcal: Decimal | None,
+) -> tuple[Decimal, Decimal]:
+    contribution = Decimal(0)
+    if mode == "dynamic" and activity_status == "ready" and activity_kcal is not None:
+        contribution = min(
+            max(activity_kcal, Decimal(0)) * CALORIE_BUDGET_FACTOR,
+            CALORIE_BUDGET_CAP,
+        )
+        final_target = (base_target + contribution).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    else:
+        final_target = base_target
+    return contribution, final_target
+
+
+def refresh_daily_budget_activity(
+    connection: sqlite3.Connection,
+    user_id: str,
+    local_day: date,
+) -> None:
+    snapshot = connection.execute(
+        """SELECT * FROM daily_budget_snapshots
+           WHERE user_id=? AND local_day=?""",
+        (user_id, str(local_day)),
+    ).fetchone()
+    if not snapshot:
+        return
+    activity_status, activity_kcal = daily_activity_context(
+        connection,
+        user_id,
+        local_day,
+        snapshot["timezone"],
+    )
+    contribution, final_target = calculate_calorie_budget(
+        Decimal(snapshot["base_target_kcal"]),
+        snapshot["budget_mode"],
+        activity_status,
+        activity_kcal,
+    )
+    connection.execute(
+        """UPDATE daily_budget_snapshots
+           SET target_kcal=?,activity_status=?,activity_kcal=?,activity_factor=?,
+               activity_cap_kcal=?,activity_contribution_kcal=?,
+               budget_calculation_version=?,budget_updated_at=?
+           WHERE user_id=? AND local_day=?""",
+        (
+            health_decimal(final_target),
+            activity_status,
+            health_decimal(activity_kcal) if activity_kcal is not None else None,
+            health_decimal(CALORIE_BUDGET_FACTOR),
+            health_decimal(CALORIE_BUDGET_CAP),
+            health_decimal(contribution),
+            CALORIE_BUDGET_VERSION,
+            iso(now()),
+            user_id,
+            str(local_day),
+        ),
+    )
+
+
+def replace_current_daily_budget(
+    connection: sqlite3.Connection,
+    user_id: str,
+    local_day: date,
+    timezone: str,
+) -> None:
+    ensure_daily_budget(connection, user_id, local_day, timezone)
+    profile = connection.execute(
+        """SELECT * FROM profiles WHERE user_id=? AND target_kcal IS NOT NULL""",
+        (user_id,),
+    ).fetchone()
+    if not profile:
+        return
+    connection.execute(
+        """UPDATE daily_budget_snapshots
+           SET timezone=?,budget_mode=?,base_target_kcal=?,target_kcal=?,
+               target_protein_g=?,target_carbs_g=?,target_fat_g=?,targets_manual=?,
+               weight_kg=?,activity_level=?,calculation_version=?,budget_updated_at=?
+           WHERE user_id=? AND local_day=?""",
+        (
+            timezone,
+            profile["calorie_budget_mode"],
+            profile["target_kcal"],
             profile["target_kcal"],
             profile["target_protein_g"],
             profile["target_carbs_g"],
@@ -1663,8 +1842,11 @@ def ensure_daily_budget(
             profile["activity_level"],
             profile["formula_version"] or "manual-v1",
             iso(now()),
+            user_id,
+            str(local_day),
         ),
     )
+    refresh_daily_budget_activity(connection, user_id, local_day)
 
 
 def daily_budget_from_row(row: sqlite3.Row | None) -> DailyBudgetSnapshot | None:
@@ -1672,6 +1854,8 @@ def daily_budget_from_row(row: sqlite3.Row | None) -> DailyBudgetSnapshot | None
         return None
     return DailyBudgetSnapshot(
         timezone=row["timezone"],
+        budget_mode=row["budget_mode"],
+        base_target_kcal=Decimal(row["base_target_kcal"]),
         target_kcal=Decimal(row["target_kcal"]),
         target_protein_g=Decimal(row["target_protein_g"]),
         target_carbs_g=Decimal(row["target_carbs_g"]),
@@ -1680,6 +1864,13 @@ def daily_budget_from_row(row: sqlite3.Row | None) -> DailyBudgetSnapshot | None
         weight_kg=Decimal(row["weight_kg"]) if row["weight_kg"] is not None else None,
         activity_level=row["activity_level"],
         calculation_version=row["calculation_version"],
+        activity_status=row["activity_status"],
+        activity_kcal=Decimal(row["activity_kcal"]) if row["activity_kcal"] is not None else None,
+        activity_factor=Decimal(row["activity_factor"]),
+        activity_cap_kcal=Decimal(row["activity_cap_kcal"]),
+        activity_contribution_kcal=Decimal(row["activity_contribution_kcal"]),
+        budget_calculation_version=row["budget_calculation_version"],
+        budget_updated_at=datetime.fromisoformat(row["budget_updated_at"] or row["created_at"]),
     )
 
 
@@ -2080,6 +2271,45 @@ def health_section_error(section: HealthSyncSectionInput) -> str | None:
     return None
 
 
+def health_section_local_days(section: HealthSyncSectionInput, timezone: str) -> list[date]:
+    zone = ZoneInfo(timezone)
+    first = section.window_start.astimezone(zone).date()
+    last_instant = section.window_end - timedelta(microseconds=1)
+    last = max(first, last_instant.astimezone(zone).date())
+    return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+
+
+def update_health_partial_days(
+    connection: sqlite3.Connection,
+    user_id: str,
+    installation_id: str,
+    section: HealthSyncSectionInput,
+    timezone: str,
+    cursor_committed: bool,
+) -> list[date]:
+    days = health_section_local_days(section, timezone)
+    if cursor_committed:
+        connection.executemany(
+            """DELETE FROM health_sync_partial_days
+               WHERE user_id=? AND installation_id=? AND data_type=? AND local_day=?""",
+            [(user_id, installation_id, section.data_type, str(local_day)) for local_day in days],
+        )
+    else:
+        stamp = iso(now())
+        connection.executemany(
+            """INSERT INTO health_sync_partial_days
+               (user_id,installation_id,data_type,local_day,updated_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(user_id,installation_id,data_type,local_day) DO UPDATE SET
+               updated_at=excluded.updated_at""",
+            [
+                (user_id, installation_id, section.data_type, str(local_day), stamp)
+                for local_day in days
+            ],
+        )
+    return days
+
+
 def health_record_error(
     record: HealthSyncRecordInput,
     section: HealthSyncSectionInput,
@@ -2275,6 +2505,7 @@ def rebuild_health_aggregate(
         (user_id, data_type, str(local_day)),
     ).fetchall()
     if not rows:
+        refresh_daily_budget_activity(connection, user_id, local_day)
         return
     grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for row in rows:
@@ -2357,6 +2588,7 @@ def rebuild_health_aggregate(
                 int(origin in selected_sources),
             ),
         )
+    refresh_daily_budget_activity(connection, user_id, local_day)
 
 
 def rebuild_health_type(connection: sqlite3.Connection, user_id: str, data_type: str) -> None:
@@ -2938,6 +3170,7 @@ def delete_account(
 def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(current_user)]):
     stamp = iso(now())
     formula = None if payload.manual else "mifflin-st-jeor-v1"
+    effective_day = now().astimezone(ZoneInfo(payload.timezone)).date()
     calculation = (
         json.dumps(payload.calculation, separators=(",", ":")) if payload.calculation else None
     )
@@ -2945,7 +3178,12 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
         connection.execute("BEGIN IMMEDIATE")
         ensure_active_user(connection, user.id)
         connection.execute(
-            """INSERT INTO profiles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO profiles
+               (user_id,birth_date,biological_input,height_cm,weight_kg,weight_measured_at,
+                activity_level,goal_direction,formula_version,calculation_json,target_kcal,
+                target_protein_g,target_carbs_g,target_fat_g,targets_manual,updated_at,
+                calorie_budget_mode,budget_mode_effective_day)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(user_id) DO UPDATE SET birth_date=excluded.birth_date,
                biological_input=excluded.biological_input,height_cm=excluded.height_cm,
                weight_kg=excluded.weight_kg,weight_measured_at=excluded.weight_measured_at,
@@ -2953,7 +3191,13 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
                formula_version=excluded.formula_version,calculation_json=excluded.calculation_json,
                target_kcal=excluded.target_kcal,target_protein_g=excluded.target_protein_g,
                target_carbs_g=excluded.target_carbs_g,target_fat_g=excluded.target_fat_g,
-               targets_manual=excluded.targets_manual,updated_at=excluded.updated_at""",
+               targets_manual=excluded.targets_manual,updated_at=excluded.updated_at,
+               calorie_budget_mode=excluded.calorie_budget_mode,
+               budget_mode_effective_day=CASE
+                 WHEN profiles.calorie_budget_mode<>excluded.calorie_budget_mode
+                 THEN excluded.budget_mode_effective_day
+                 ELSE COALESCE(profiles.budget_mode_effective_day,
+                               excluded.budget_mode_effective_day) END""",
             (
                 user.id,
                 str(payload.birth_date) if payload.birth_date else None,
@@ -2971,14 +3215,27 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
                 str(payload.target_fat_g),
                 int(payload.manual),
                 stamp,
+                payload.calorie_budget_mode,
+                str(effective_day),
             ),
         )
         connection.execute(
             "UPDATE users SET locale=?,timezone=?,onboarding_complete=1 WHERE id=?",
             (payload.locale, payload.timezone, user.id),
         )
+        replace_current_daily_budget(
+            connection,
+            user.id,
+            effective_day,
+            payload.timezone,
+        )
         connection.commit()
-    return {"onboarding_complete": True, "formula_version": formula, "updated_at": stamp}
+    return {
+        "onboarding_complete": True,
+        "formula_version": formula,
+        "calorie_budget_mode": payload.calorie_budget_mode,
+        "updated_at": stamp,
+    }
 
 
 @app.get("/v1/profile")
@@ -2993,6 +3250,40 @@ def get_profile(user: Annotated[UserContext, Depends(current_user)]):
     if not profile or not profile["target_kcal"]:
         fail(404, "not_found", "Profil nicht gefunden.")
     return dict(profile)
+
+
+@app.put("/v1/calorie-budget/mode", response_model=DailyBudgetSnapshot)
+def save_calorie_budget_mode(
+    payload: CalorieBudgetModeInput,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    local_day = now().astimezone(ZoneInfo(user.timezone)).date()
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
+        profile = connection.execute(
+            "SELECT calorie_budget_mode FROM profiles WHERE user_id=? AND target_kcal IS NOT NULL",
+            (user.id,),
+        ).fetchone()
+        if not profile:
+            connection.rollback()
+            fail(404, "profile_required", "Für das Kalorienbudget ist ein Profil erforderlich.")
+        connection.execute(
+            """UPDATE profiles
+               SET calorie_budget_mode=?,budget_mode_effective_day=?,updated_at=?
+               WHERE user_id=?""",
+            (payload.mode, str(local_day), iso(now()), user.id),
+        )
+        replace_current_daily_budget(
+            connection,
+            user.id,
+            local_day,
+            user.timezone,
+        )
+        snapshot = load_daily_budget(connection, user.id, local_day)
+        assert snapshot is not None
+        connection.commit()
+    return snapshot
 
 
 @app.post("/v1/health/batches", response_model=HealthSyncBatchResponse)
@@ -3092,6 +3383,17 @@ def sync_health_batch(
                         stamp,
                     ),
                 )
+            if section_error is None:
+                coverage_days = update_health_partial_days(
+                    connection,
+                    user.id,
+                    payload.installation_id,
+                    section,
+                    user.timezone,
+                    cursor_committed,
+                )
+                if section.data_type == "active_calories":
+                    affected.update((section.data_type, local_day) for local_day in coverage_days)
             section_results.append(
                 HealthSyncSectionResult(
                     data_type=section.data_type,
@@ -4144,7 +4446,13 @@ def list_meals(
 
 @app.get("/v1/days/{local_day}/summary", response_model=DaySummary)
 def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_user)]):
+    current_day = now().astimezone(ZoneInfo(user.timezone)).date()
     with db() as connection:
+        if local_day == current_day:
+            connection.execute("BEGIN IMMEDIATE")
+            ensure_daily_budget(connection, user.id, local_day, user.timezone)
+            refresh_daily_budget_activity(connection, user.id, local_day)
+            connection.commit()
         rows = connection.execute(
             """SELECT n.meal_id,n.nutrient_key,n.value
                FROM nutrient_values n JOIN meals m ON m.id=n.meal_id
@@ -4175,7 +4483,7 @@ def day_summary(local_day: date, user: Annotated[UserContext, Depends(current_us
         missing_core=sorted(CORE_NUTRIENTS - set(available)),
         coverage={key: len(meal_ids) for key, meal_ids in sorted(coverage.items())},
         meal_count=count,
-        targets=targets if count else None,
+        targets=targets if count or local_day == current_day else None,
     )
 
 

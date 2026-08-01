@@ -20,6 +20,7 @@ data class ProfileRequest(
     @SerialName("target_fat_g") val targetFat: String,
     val manual: Boolean,
     val calculation: Map<String, String>? = null,
+    @SerialName("calorie_budget_mode") val calorieBudgetMode: String = "fixed",
 )
 
 @Serializable private data class SavedProfile(@SerialName("onboarding_complete") val complete: Boolean)

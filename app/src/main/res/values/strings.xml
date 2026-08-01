@@ -58,6 +58,12 @@
     <string name="target_protein">Proteinziel (g)</string>
     <string name="target_carbs">Kohlenhydratziel (g)</string>
     <string name="target_fat">Fettziel (g)</string>
+    <string name="calorie_budget_mode">Tägliches Kalorienbudget</string>
+    <string name="fixed_budget">Fest</string>
+    <string name="dynamic_budget">Dynamisch</string>
+    <string name="fixed_budget_description">Das Basisziel bleibt unverändert. Aktive Kalorien werden nur als Kontext angezeigt.</string>
+    <string name="dynamic_budget_description">Die Hälfte vertrauenswürdig synchronisierter aktiver Kalorien wird addiert, höchstens 500 kcal. Fehlende, teilweise oder widersprüchliche Daten erhöhen das Ziel nicht.</string>
+    <string name="calorie_budget_example">Beispiel: 2.000 kcal Basis + 50 % von 400 aktiven kcal = 2.200 kcal.</string>
     <string name="goal_disclaimer">Der berechnete Wert ist ein nachvollziehbarer Vorschlag und keine medizinische Empfehlung.</string>
     <string name="onboarding_validation_error">Bitte prüfe die markierten Angaben und Einheiten.</string>
     <string name="finish_onboarding">Einrichtung abschließen</string>
@@ -77,6 +83,22 @@
     <string name="missing_values">Fehlende Werte: %1$s</string>
     <string name="manual_goal_source">Zielquelle: manuell</string>
     <string name="formula_goal_source">Zielquelle: Formel</string>
+    <string name="calorie_budget_mode_value">Kalorienbudget: %1$s</string>
+    <string name="show_budget_calculation">Berechnung anzeigen</string>
+    <string name="hide_budget_calculation">Berechnung ausblenden</string>
+    <string name="budget_eaten">Gegessen: %1$s kcal</string>
+    <string name="budget_base_target">Basisziel: %1$s kcal</string>
+    <string name="budget_activity_value">Aktive Kalorien: %1$s kcal</string>
+    <string name="budget_activity_factor">Anrechnungsfaktor: %1$s</string>
+    <string name="budget_activity_cap">Deckelung: %1$s kcal</string>
+    <string name="budget_activity_contribution">Berücksichtigter Aktivitätsanteil: %1$s kcal</string>
+    <string name="budget_final_target">Finales Tagesbudget: %1$s kcal</string>
+    <string name="budget_status_not_synced">Aktive Kalorien wurden noch nicht synchronisiert.</string>
+    <string name="budget_status_missing">Synchronisiert, aber für diesen Tag fehlen aktive Kalorien.</string>
+    <string name="budget_status_partial">Die Aktivitätsdaten sind nur teilweise synchronisiert und werden nicht angerechnet.</string>
+    <string name="budget_status_ready">Die aktiven Kalorien sind vollständig und konfliktfrei synchronisiert.</string>
+    <string name="budget_status_conflict">Mehrere Aktivitätsquellen widersprechen sich. Löse den Konflikt in Health Connect.</string>
+    <string name="budget_status_disabled">Aktive Kalorien sind in Health Connect deaktiviert oder nicht freigegeben.</string>
     <string name="remaining_value">Noch %1$s %2$s</string>
     <string name="exceeded_value">%1$s %2$s über dem Ziel</string>
     <string name="breakfast">Frühstück</string>
