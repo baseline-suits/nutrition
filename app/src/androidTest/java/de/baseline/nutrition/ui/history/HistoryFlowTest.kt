@@ -58,6 +58,8 @@ class HistoryFlowTest {
             }
         }
 
+        compose.onNodeWithTag("history-calories").assertIsDisplayed()
+        compose.onNodeWithTag("history-macros").assertIsDisplayed()
         compose.onNodeWithTag("history-day-2026-07-02").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(LocalDate.of(2026, 7, 2), selected) }
     }

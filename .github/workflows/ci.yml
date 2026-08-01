@@ -51,6 +51,9 @@ jobs:
       - name: Übersetzungen prüfen
         run: ./scripts/check-translations.sh
 
+      - name: Secrets prüfen
+        run: ./scripts/check-secrets.sh
+
       - name: Android-Lint
         run: ./gradlew --no-daemon :app:lintDebug
 

@@ -19,7 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -68,6 +68,8 @@ UPLOAD_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp"}
 UPLOAD_MAX_BYTES = 15 * 1024 * 1024
 UPLOAD_MAX_PIXELS = 25_000_000
 UPLOAD_MAX_EDGE = 2048
+MAX_SESSION_TOKEN_LENGTH = 256
+MAX_RATE_LIMIT_KEYS = 10_000
 DELETION_RETENTION_DAYS = 45
 OFF_NUTRIENTS = {
     "energy-kcal": ("energy", "kcal"),
@@ -213,9 +215,15 @@ def fail(http_status: int, code: str, message: str, field: str | None = None) ->
 
 
 class SlidingWindow:
-    def __init__(self, attempts: int = 10, window_seconds: int = 60):
+    def __init__(
+        self,
+        attempts: int = 10,
+        window_seconds: int = 60,
+        max_keys: int = MAX_RATE_LIMIT_KEYS,
+    ):
         self.attempts = attempts
         self.window_seconds = window_seconds
+        self.max_keys = max_keys
         self.entries: dict[str, deque[float]] = defaultdict(deque)
         self.lock = threading.Lock()
 
@@ -228,6 +236,8 @@ class SlidingWindow:
             if len(bucket) >= self.attempts:
                 fail(429, "rate_limited", "Zu viele Versuche. Bitte später erneut versuchen.")
             bucket.append(timestamp)
+            while len(self.entries) > self.max_keys:
+                self.entries.pop(next(iter(self.entries)), None)
 
     def clear(self, key: str) -> None:
         with self.lock:
@@ -238,6 +248,7 @@ auth_limit = SlidingWindow()
 analysis_limit = SlidingWindow(attempts=8, window_seconds=60)
 off_limit = SlidingWindow(attempts=30, window_seconds=60)
 health_sync_limit = SlidingWindow(attempts=30, window_seconds=60)
+upload_limit = SlidingWindow(attempts=30, window_seconds=60)
 
 
 class Credentials(BaseModel):
@@ -299,6 +310,8 @@ def current_user(authorization: Annotated[str | None, Header()] = None) -> UserC
     if not authorization or not authorization.startswith("Bearer "):
         fail(401, "authentication_required", "Anmeldung erforderlich.")
     token = authorization[7:]
+    if not token or len(token) > MAX_SESSION_TOKEN_LENGTH or token != token.strip():
+        fail(401, "invalid_session", "Die Sitzung ist abgelaufen oder wurde widerrufen.")
     with db() as connection:
         row = connection.execute(
             """SELECT u.*, s.id session_id, s.expires_at, s.revoked_at
@@ -881,8 +894,20 @@ def map_off_product(raw: dict) -> ProductOutput:
         raise ValueError("missing nutrients")
     present = {nutrient.key for nutrient in nutrients}
     image_url = str(raw.get("image_front_small_url") or "").strip() or None
-    if image_url and not image_url.startswith("https://"):
-        image_url = None
+    if image_url:
+        parsed_image_url = urlsplit(image_url)
+        image_host = (parsed_image_url.hostname or "").lower()
+        trusted_image_host = image_host == "openfoodfacts.org" or image_host.endswith(
+            ".openfoodfacts.org"
+        )
+        if (
+            parsed_image_url.scheme != "https"
+            or not trusted_image_host
+            or parsed_image_url.username
+            or parsed_image_url.password
+            or parsed_image_url.fragment
+        ):
+            image_url = None
     serving_quantity = raw.get("serving_quantity")
     serving_unit = str(raw.get("serving_quantity_unit") or "").lower() or None
     try:
@@ -2994,6 +3019,20 @@ def health_aggregate_output(
 app = FastAPI(title="Baseline Nutrition API", version="1.0.0")
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/v1/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
+
+
 @app.on_event("startup")
 def startup() -> None:
     migrate()
@@ -3059,7 +3098,10 @@ def register(payload: Registration, request: Request):
 @app.post("/v1/auth/login", response_model=SessionResponse)
 def login(payload: Credentials, request: Request):
     auth_limit.check(
-        f"login:{request.client.host if request.client else 'unknown'}:{payload.username.lower()}"
+        "login:{}:{}".format(
+            request.client.host if request.client else "unknown",
+            digest(payload.username.casefold())[:32],
+        )
     )
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -3633,6 +3675,7 @@ def create_upload(
     user: Annotated[UserContext, Depends(current_user)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
+    upload_limit.check(user.id)
     if not 8 <= len(idempotency_key) <= 200:
         fail(422, "invalid_idempotency_key", "Ungültiger Idempotenzschlüssel.")
     stamp = iso(now())
@@ -3698,6 +3741,7 @@ async def upload_content(
     request: Request,
     user: Annotated[UserContext, Depends(current_user)],
 ):
+    upload_limit.check(user.id)
     with db() as connection:
         row = load_upload(connection, user.id, upload_id, {"pending_upload", "uploaded"})
     media_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
@@ -3751,6 +3795,7 @@ async def upload_content(
 
 @app.post("/v1/uploads/{upload_id}/finalize", response_model=UploadInfo)
 def finalize_upload(upload_id: str, user: Annotated[UserContext, Depends(current_user)]):
+    upload_limit.check(user.id)
     with db() as connection:
         row = load_upload(connection, user.id, upload_id)
         if row["status"] in {"ready", "analysis_attached"}:

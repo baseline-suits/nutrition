@@ -1,4 +1,4 @@
-.PHONY: quality android-lint android-test android-build translations backend-test backend-run access-code retry-deletions
+.PHONY: quality android-lint android-test android-build translations security-scan backend-test backend-run access-code retry-deletions
 
 quality:
 	./scripts/quality-gate.sh
@@ -14,6 +14,9 @@ android-build:
 
 translations:
 	./scripts/check-translations.sh
+
+security-scan:
+	./scripts/check-secrets.sh
 
 backend-test:
 	$(MAKE) -C backend quality

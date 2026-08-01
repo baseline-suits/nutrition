@@ -5,9 +5,11 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import de.baseline.nutrition.data.diary.NutrientDto
 import de.baseline.nutrition.data.product.ProductDto
 import de.baseline.nutrition.ui.theme.BaselineTheme
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -28,7 +30,24 @@ class BarcodeFlowTest {
         compose.onNodeWithTag("barcode-permission-denied").assertIsDisplayed()
         compose.onNodeWithTag("barcode-request-permission").performClick()
         compose.runOnIdle { assertTrue(requested) }
-        compose.onNodeWithTag("barcode-search-query").assertIsDisplayed()
+        compose.onNodeWithTag("barcode-search-query").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun manuallyEnteredBarcodeUsesTheSameProductLookup() {
+        var submitted = ""
+        show(
+            state = BarcodeUiState(),
+            permissionGranted = true,
+            onBarcode = { submitted = it },
+        )
+
+        compose.onNodeWithTag("barcode-manual-query")
+            .performScrollTo()
+            .performTextInput("4008400214504")
+        compose.onNodeWithTag("barcode-manual-submit").performClick()
+
+        compose.runOnIdle { assertEquals("4008400214504", submitted) }
     }
 
     @Test
@@ -79,15 +98,18 @@ class BarcodeFlowTest {
         state: BarcodeUiState,
         permissionGranted: Boolean,
         onPermission: () -> Unit = {},
+        onBarcode: (String) -> Unit = {},
         onUse: () -> Unit = {},
     ) {
         compose.setContent {
             BaselineTheme {
                 BarcodeContent(
                     state = state,
+                    selectedDay = "2026-08-01",
                     cameraPermissionGranted = permissionGranted,
                     permissionRequested = true,
                     onRequestPermission = onPermission,
+                    onBarcode = onBarcode,
                     onSearchQuery = {},
                     onSearch = {},
                     onSelectProduct = {},
@@ -100,7 +122,7 @@ class BarcodeFlowTest {
                     onManual = {},
                     onDescription = {},
                     onClose = {},
-                    cameraPreview = {},
+                    cameraPreview = { _, _ -> },
                 )
             }
         }

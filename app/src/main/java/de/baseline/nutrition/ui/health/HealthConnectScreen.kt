@@ -2,6 +2,7 @@ package de.baseline.nutrition.ui.health
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ fun HealthConnectScreen(
     onClose: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
+    BackHandler(onBack = onClose)
     val pendingRequest = state.pendingPermissionRequest
     val launcher = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract(),

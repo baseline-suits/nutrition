@@ -1,23 +1,45 @@
 package de.baseline.nutrition.ui.settings
 
-import android.content.res.Resources
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.HealthAndSafety
+import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PrivacyTip
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.TrackChanges
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -30,10 +52,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import de.baseline.nutrition.R
 import de.baseline.nutrition.data.settings.SettingsHealthAggregateDto
 import de.baseline.nutrition.data.settings.SettingsSourcePreferenceDto
@@ -42,18 +68,19 @@ import de.baseline.nutrition.domain.health.HealthDataType
 import de.baseline.nutrition.domain.health.HealthPermissionState
 import de.baseline.nutrition.ui.diary.AccountDeletionDialog
 import de.baseline.nutrition.ui.diary.AccountDeletionFinishedDialog
+import de.baseline.nutrition.ui.theme.BaselineShapes
 import de.baseline.nutrition.ui.theme.BaselineSpacing
 import java.time.LocalDate
 
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
+    onOpenBudget: () -> Unit,
     onOpenHealth: () -> Unit,
     onClose: () -> Unit,
     onLoggedOut: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
-    BackHandler(onBack = onClose)
     LaunchedEffect(state.loggedOut) {
         if (state.loggedOut) onLoggedOut()
     }
@@ -63,6 +90,7 @@ fun SettingsScreen(
         onCalculate = viewModel::calculateTargets,
         onSaveProfile = viewModel::saveProfile,
         onLocale = viewModel::setLocale,
+        onOpenBudget = onOpenBudget,
         onOpenHealth = onOpenHealth,
         onSync = viewModel::syncNow,
         onDisconnectHealth = viewModel::disconnectHealth,
@@ -84,6 +112,7 @@ internal fun SettingsContent(
     onCalculate: () -> Unit,
     onSaveProfile: () -> Unit,
     onLocale: (String) -> Unit,
+    onOpenBudget: () -> Unit,
     onOpenHealth: () -> Unit,
     onSync: () -> Unit,
     onDisconnectHealth: () -> Unit,
@@ -96,11 +125,17 @@ internal fun SettingsContent(
     onClose: () -> Unit,
     onAccountDeletionFinished: () -> Unit,
 ) {
+    var activeSection by rememberSaveable { mutableStateOf(SettingsSection.Overview.name) }
     var showDelete by rememberSaveable { mutableStateOf(false) }
     var deletePassword by remember { mutableStateOf("") }
     var deleteConfirmed by remember { mutableStateOf(false) }
     var showLogoutAll by rememberSaveable { mutableStateOf(false) }
     val busy = state.operation != null
+    val section = SettingsSection.valueOf(activeSection)
+    BackHandler {
+        if (section == SettingsSection.Overview) onClose()
+        else activeSection = SettingsSection.Overview.name
+    }
     LaunchedEffect(state.accountDeletionStatus) {
         if (state.accountDeletionStatus != null) {
             deletePassword = ""
@@ -111,38 +146,58 @@ internal fun SettingsContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.safeDrawing)
             .verticalScroll(rememberScrollState())
-            .padding(BaselineSpacing.large),
+            .padding(horizontal = BaselineSpacing.screen, vertical = BaselineSpacing.medium),
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(stringResource(R.string.settings_title), fontWeight = FontWeight.Bold)
-            TextButton(onClick = onClose) { Text(stringResource(R.string.close)) }
-        }
+        SettingsHeader(
+            title = stringResource(settingsSectionTitle(section)),
+            onBack = {
+                if (section == SettingsSection.Overview) onClose()
+                else activeSection = SettingsSection.Overview.name
+            },
+        )
         if (state.operation == SettingsOperation.Loading && state.account == null) {
             Text(stringResource(R.string.settings_loading), modifier = Modifier.testTag("settings-loading"))
         } else {
-            LanguageAndAppCard(state, onLocale)
-            ProfileSettingsCard(state, onDraft, onCalculate, onSaveProfile)
-            HealthAndSyncCard(
-                state,
-                onOpenHealth,
-                onSync,
-                onDisconnectHealth,
-                onSource,
-            )
-            AccountSettingsCard(
-                state,
-                onReloadCaches,
-                onLogoutDevice = { onLogout(false) },
-                onLogoutAll = { showLogoutAll = true },
-                onDelete = {
-                    deletePassword = ""
-                    deleteConfirmed = false
-                    showDelete = true
-                },
-            )
+            when (section) {
+                SettingsSection.Overview -> SettingsOverviewContent(
+                    state = state,
+                    onLocale = onLocale,
+                    onGoals = { activeSection = SettingsSection.Goals.name },
+                    onOpenHealth = onOpenHealth,
+                    onSync = { activeSection = SettingsSection.Sync.name },
+                    onPrivacy = { activeSection = SettingsSection.Privacy.name },
+                    onAccount = { activeSection = SettingsSection.Account.name },
+                    onLogout = { onLogout(false) },
+                )
+                SettingsSection.Goals -> ProfileSettingsCard(
+                    state,
+                    onDraft,
+                    onCalculate,
+                    onSaveProfile,
+                    onOpenBudget,
+                )
+                SettingsSection.Sync -> HealthAndSyncCard(
+                    state,
+                    onOpenHealth,
+                    onSync,
+                    onDisconnectHealth,
+                    onSource,
+                )
+                SettingsSection.Privacy -> PrivacySettingsCard()
+                SettingsSection.Account -> AccountSettingsCard(
+                    state,
+                    onReloadCaches,
+                    onLogoutDevice = { onLogout(false) },
+                    onLogoutAll = { showLogoutAll = true },
+                    onDelete = {
+                        deletePassword = ""
+                        deleteConfirmed = false
+                        showDelete = true
+                    },
+                )
+            }
         }
         state.error?.let {
             Text(
@@ -156,8 +211,15 @@ internal fun SettingsContent(
                 modifier = Modifier.testTag("settings-success"),
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
-            OutlinedButton(onClick = onRefresh, enabled = !busy) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            TextButton(
+                onClick = onRefresh,
+                enabled = !busy,
+                modifier = Modifier.testTag("settings-refresh"),
+            ) {
                 Text(stringResource(R.string.refresh))
             }
             if (state.error != null || state.notice != null) {
@@ -212,47 +274,253 @@ internal fun SettingsContent(
 }
 
 @Composable
-private fun LanguageAndAppCard(state: SettingsUiState, onLocale: (String) -> Unit) {
+private fun SettingsHeader(title: String, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack, modifier = Modifier.testTag("settings-back")) {
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.back))
+        }
+        Spacer(Modifier.width(BaselineSpacing.small))
+        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun SettingsOverviewContent(
+    state: SettingsUiState,
+    onLocale: (String) -> Unit,
+    onGoals: () -> Unit,
+    onOpenHealth: () -> Unit,
+    onSync: () -> Unit,
+    onPrivacy: () -> Unit,
+    onAccount: () -> Unit,
+    onLogout: () -> Unit,
+) {
+    val enabled = state.operation == null
+    SettingsSectionLabel(R.string.settings_language_section)
+    LanguageSettingCard(state, onLocale)
+
+    SettingsSectionLabel(R.string.settings_goals_section)
+    SettingsGroupCard(modifier = Modifier.testTag("settings-profile")) {
+        SettingsOverviewRow(
+            icon = Icons.Rounded.TrackChanges,
+            title = stringResource(R.string.settings_manage_goals),
+            subtitle = stringResource(R.string.settings_manage_goals_description),
+            enabled = enabled,
+            onClick = onGoals,
+            modifier = Modifier.testTag("settings-open-goals"),
+        )
+    }
+
+    SettingsSectionLabel(R.string.health_connect_title)
+    SettingsGroupCard(modifier = Modifier.testTag("settings-health-sync")) {
+        SettingsOverviewRow(
+            icon = Icons.Rounded.HealthAndSafety,
+            title = stringResource(R.string.health_connect_title),
+            subtitle = stringResource(settingsHealthStatusLabel(settingsHealthStatus(state))),
+            enabled = enabled,
+            onClick = onOpenHealth,
+            modifier = Modifier.testTag("settings-open-health"),
+        )
+    }
+
+    SettingsSectionLabel(R.string.settings_sync_section)
+    SettingsGroupCard {
+        SettingsOverviewRow(
+            icon = Icons.Rounded.Sync,
+            title = stringResource(R.string.settings_sync_title),
+            subtitle = stringResource(
+                R.string.settings_meal_sync_status,
+                state.mealSync.overview.pending,
+                state.mealSync.overview.failed,
+                state.mealSync.overview.conflicts,
+            ),
+            enabled = enabled,
+            onClick = onSync,
+            modifier = Modifier.testTag("settings-sync-section"),
+        )
+    }
+
+    SettingsSectionLabel(R.string.settings_privacy_section)
+    SettingsGroupCard {
+        SettingsOverviewRow(
+            icon = Icons.Rounded.PrivacyTip,
+            title = stringResource(R.string.settings_privacy_title),
+            subtitle = stringResource(R.string.settings_privacy_description),
+            enabled = enabled,
+            onClick = onPrivacy,
+            modifier = Modifier.testTag("settings-privacy"),
+        )
+    }
+
+    SettingsSectionLabel(R.string.settings_account_section)
+    SettingsGroupCard(modifier = Modifier.testTag("settings-account")) {
+        SettingsOverviewRow(
+            icon = Icons.Rounded.Person,
+            title = stringResource(R.string.settings_account_manage),
+            subtitle = stringResource(
+                R.string.settings_signed_in_as,
+                state.account?.username ?: "–",
+            ),
+            enabled = enabled,
+            onClick = onAccount,
+            modifier = Modifier.testTag("settings-account-open"),
+        )
+        HorizontalDivider(modifier = Modifier.padding(horizontal = BaselineSpacing.medium))
+        SettingsOverviewRow(
+            icon = Icons.AutoMirrored.Rounded.Logout,
+            title = stringResource(R.string.logout_this_device),
+            subtitle = stringResource(R.string.settings_logout_description),
+            enabled = enabled,
+            onClick = onLogout,
+            modifier = Modifier.testTag("settings-logout-device"),
+        )
+    }
+
+    Text(
+        stringResource(
+            R.string.settings_version_footer,
+            state.appDetails.versionName,
+            state.appDetails.versionCode,
+            state.appDetails.environment,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelMedium,
+    )
+}
+
+@Composable
+private fun SettingsSectionLabel(label: Int) {
+    Text(
+        stringResource(label),
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = BaselineSpacing.tiny),
+    )
+}
+
+@Composable
+private fun LanguageSettingCard(state: SettingsUiState, onLocale: (String) -> Unit) {
     val locale = state.account?.locale ?: "de"
-    Card(modifier = Modifier.fillMaxWidth().testTag("settings-language")) {
-        Column(
-            Modifier.padding(BaselineSpacing.medium),
-            verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
+    var expanded by remember { mutableStateOf(false) }
+    SettingsGroupCard(modifier = Modifier.testTag("settings-language")) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(BaselineSpacing.compact),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.compact),
         ) {
-            Text(stringResource(R.string.settings_language_display), fontWeight = FontWeight.Bold)
-            Text(
-                stringResource(
-                    R.string.settings_system_language,
-                    Resources.getSystem().configuration.locales[0].toLanguageTag(),
-                ),
-            )
-            Text(stringResource(R.string.settings_app_language))
-            Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
-                listOf("de", "ru").forEach { value ->
-                    FilterChip(
-                        selected = locale == value,
-                        enabled = state.operation == null,
-                        onClick = { if (locale != value) onLocale(value) },
-                        label = {
-                            Text(stringResource(if (value == "ru") R.string.russian else R.string.german))
-                        },
-                        modifier = Modifier.testTag("settings-language-$value"),
-                    )
+            SettingsIcon(Icons.Rounded.Language)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.settings_language_choice), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    stringResource(R.string.settings_language_choice_description),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Box {
+                TextButton(
+                    onClick = { expanded = true },
+                    enabled = state.operation == null,
+                    modifier = Modifier.testTag("settings-language-menu"),
+                ) {
+                    Text(stringResource(if (locale == "ru") R.string.russian else R.string.german))
+                    Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    listOf("de", "ru").forEach { value ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(stringResource(if (value == "ru") R.string.russian else R.string.german))
+                            },
+                            onClick = {
+                                expanded = false
+                                if (value != locale) onLocale(value)
+                            },
+                            modifier = Modifier.testTag("settings-language-$value"),
+                        )
+                    }
                 }
             }
-            Text(stringResource(R.string.settings_language_restart_hint))
-            Text(stringResource(R.string.settings_reduced_motion_system))
-            HorizontalDivider()
-            Text(
-                stringResource(
-                    R.string.settings_app_info,
-                    state.appDetails.versionName,
-                    state.appDetails.versionCode,
-                    state.appDetails.environment,
-                ),
-            )
         }
     }
+}
+
+@Composable
+private fun SettingsGroupCard(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = BaselineShapes.compactCard,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column { content() }
+    }
+}
+
+@Composable
+private fun SettingsOverviewRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 76.dp)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(BaselineSpacing.compact),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.compact),
+    ) {
+        SettingsIcon(icon)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                subtitle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SettingsIcon(icon: ImageVector) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+    }
+}
+
+private enum class SettingsSection { Overview, Goals, Sync, Privacy, Account }
+
+private fun settingsSectionTitle(section: SettingsSection): Int = when (section) {
+    SettingsSection.Overview -> R.string.settings_title
+    SettingsSection.Goals -> R.string.settings_profile_goals
+    SettingsSection.Sync -> R.string.settings_sync_title
+    SettingsSection.Privacy -> R.string.settings_privacy_title
+    SettingsSection.Account -> R.string.settings_account_title
 }
 
 @Composable
@@ -261,6 +529,7 @@ private fun ProfileSettingsCard(
     onDraft: (SettingsProfileDraft) -> Unit,
     onCalculate: () -> Unit,
     onSave: () -> Unit,
+    onOpenBudget: () -> Unit,
 ) {
     val draft = state.profileDraft
     val enabled = state.operation == null
@@ -325,14 +594,6 @@ private fun ProfileSettingsCard(
             SettingsField(R.string.target_fat, draft.targetFat, draft.manual && enabled) {
                 onDraft(draft.copy(targetFat = it))
             }
-            Text(stringResource(R.string.calorie_budget_mode))
-            ChoiceRow(
-                listOf("fixed", "dynamic"),
-                draft.calorieBudgetMode,
-                { if (it == "dynamic") R.string.dynamic_budget else R.string.fixed_budget },
-                "settings-budget-mode",
-                enabled,
-            ) { onDraft(draft.copy(calorieBudgetMode = it)) }
             Text(
                 stringResource(
                     if (draft.calorieBudgetMode == "dynamic") {
@@ -342,6 +603,13 @@ private fun ProfileSettingsCard(
                     },
                 ),
             )
+            OutlinedButton(
+                onClick = onOpenBudget,
+                enabled = enabled,
+                modifier = Modifier.testTag("settings-open-budget"),
+            ) {
+                Text(stringResource(R.string.open_calorie_budget))
+            }
             Text(stringResource(R.string.settings_effective_day, LocalDate.now().toString()))
             Text(stringResource(R.string.settings_history_unchanged))
             Button(
@@ -472,6 +740,23 @@ internal fun HealthSourceSettings(
 }
 
 @Composable
+private fun PrivacySettingsCard() {
+    Card(modifier = Modifier.fillMaxWidth().testTag("settings-privacy-details")) {
+        Column(
+            Modifier.padding(BaselineSpacing.medium),
+            verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
+        ) {
+            Text(stringResource(R.string.settings_privacy_title), fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.settings_privacy_ai))
+            HorizontalDivider()
+            Text(stringResource(R.string.settings_privacy_off))
+            HorizontalDivider()
+            Text(stringResource(R.string.settings_privacy_health))
+        }
+    }
+}
+
+@Composable
 private fun AccountSettingsCard(
     state: SettingsUiState,
     onReloadCaches: () -> Unit,
@@ -484,11 +769,8 @@ private fun AccountSettingsCard(
             Modifier.padding(BaselineSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
         ) {
-            Text(stringResource(R.string.account_and_privacy), fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.settings_account_title), fontWeight = FontWeight.Bold)
             Text(stringResource(R.string.settings_signed_in_as, state.account?.username ?: "–"))
-            Text(stringResource(R.string.settings_privacy_ai))
-            Text(stringResource(R.string.settings_privacy_off))
-            Text(stringResource(R.string.settings_privacy_health))
             OutlinedButton(
                 onClick = onReloadCaches,
                 enabled = state.operation == null,

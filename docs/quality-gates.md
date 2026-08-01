@@ -5,6 +5,7 @@
 | Gate | Lokal | CI | Blockiert bei Fehler |
 | --- | --- | --- | --- |
 | Deutsche/russische Ressourcen vollständig | `make translations` | `android / translations` | ja |
+| Keine offensichtlichen Secrets oder privaten Schlüssel | `make security-scan` | `android / secrets` | ja |
 | Android-Lint | `make android-lint` | `android / lint` | ja |
 | Android-Unit-Tests | `make android-test` | `android / unit-tests` | ja |
 | Debug- und interne Beta-APK | `make android-build` | `android / build` | ja |
@@ -13,6 +14,10 @@
 | Abhängigkeitsprüfung | GitHub | `dependency-review` auf Pull Requests | ja ab mittlerem Schweregrad |
 
 Die Branch-Protection für `main` muss im GitHub-Repository die Jobs `android` und `dependency-review` als erforderliche Checks konfigurieren. Repository-Einstellungen werden bewusst nicht aus der lokalen CI-Datei verändert.
+
+Der Secret-Scan prüft versionierte Dateien auf verbreitete Tokenpräfixe und private
+Schlüssel. Konkrete Zugangsdaten, Session-Tokens und Zugangscodes gehören weder in
+Quelltext noch in Testartefakte.
 
 ## Artefakte
 

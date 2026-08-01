@@ -21,7 +21,7 @@ ci-unit:
 ci-api:
 	$(PYTEST) -q tests/test_api.py tests/test_analysis.py tests/test_uploads.py tests/test_products.py \
 		tests/test_reuse.py tests/test_history.py tests/test_deletion.py tests/test_health_sync.py \
-		tests/test_calorie_budget.py tests/test_settings.py
+		tests/test_calorie_budget.py tests/test_settings.py tests/test_security.py
 
 ci-database:
 	$(PYTEST) -q tests/test_foundation.py

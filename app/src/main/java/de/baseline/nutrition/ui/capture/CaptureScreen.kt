@@ -11,28 +11,52 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -42,17 +66,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.intl.Locale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import de.baseline.nutrition.R
 import de.baseline.nutrition.domain.diary.MealEditorDraft
+import de.baseline.nutrition.ui.theme.BaselineCard
+import de.baseline.nutrition.ui.theme.BaselinePrimaryButton
+import de.baseline.nutrition.ui.theme.BaselineShapes
 import de.baseline.nutrition.ui.theme.BaselineSpacing
 import java.io.File
 import java.io.FileOutputStream
@@ -68,6 +98,7 @@ fun CaptureScreen(
     onFavorites: () -> Unit,
     onRecent: () -> Unit,
     onManual: () -> Unit,
+    onMenu: () -> Unit,
     onClose: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
@@ -145,6 +176,7 @@ fun CaptureScreen(
             onClose()
         } else {
             viewModel.selectMode(CaptureMode.Menu)
+            onMenu()
         }
     }
     BackHandler(onBack = ::requestClose)
@@ -169,14 +201,22 @@ fun CaptureScreen(
         CaptureMode.Camera, CaptureMode.Import -> PhotoFlow(
             state = state,
             localError = localError,
-            onText = viewModel::updateText,
+            onText = { viewModel.updateText(it.take(250)) },
             onMealType = viewModel::updateMealType,
-            onChooseAgain = {
+            onCamera = {
                 localError = null
                 if (state.mode == CaptureMode.Camera) launchCamera()
-                else importLauncher.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                )
+                else viewModel.selectMode(CaptureMode.Camera)
+            },
+            onImport = {
+                localError = null
+                if (state.mode == CaptureMode.Import) {
+                    importLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                } else {
+                    viewModel.selectMode(CaptureMode.Import)
+                }
             },
             onAnalyze = { viewModel.analyze(locale) },
             onCancel = viewModel::cancel,
@@ -204,6 +244,7 @@ fun CaptureScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuickAddMenu(
     onMode: (CaptureMode) -> Unit,
@@ -213,48 +254,75 @@ fun QuickAddMenu(
     onManual: () -> Unit,
     onBack: () -> Unit,
 ) {
-    CaptureColumn {
-        TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
-        Text(stringResource(R.string.add_meal_title), fontWeight = FontWeight.Bold)
-        CaptureChoice(
-            R.string.describe_food,
-            R.string.describe_food_hint,
-            "capture-description",
-        ) { onMode(CaptureMode.Description) }
-        CaptureChoice(
-            R.string.take_food_photo,
-            R.string.take_food_photo_hint,
-            "capture-camera",
-        ) { onMode(CaptureMode.Camera) }
-        CaptureChoice(
-            R.string.import_food_photo,
-            R.string.import_food_photo_hint,
-            "capture-import",
-        ) { onMode(CaptureMode.Import) }
-        CaptureChoice(
-            R.string.scan_barcode,
-            R.string.scan_barcode_hint,
-            "capture-barcode",
-            onBarcode,
-        )
-        CaptureChoice(
-            R.string.favorites,
-            R.string.favorites_hint,
-            "capture-favorites",
-            onFavorites,
-        )
-        CaptureChoice(
-            R.string.recent_meals,
-            R.string.recent_meals_hint,
-            "capture-recent",
-            onRecent,
-        )
-        CaptureChoice(
-            R.string.manual_entry,
-            R.string.manual_entry_hint,
-            "capture-manual",
-            onManual,
-        )
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    ModalBottomSheet(
+        onDismissRequest = onBack,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = BaselineSpacing.screen)
+                .padding(bottom = BaselineSpacing.large),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(stringResource(R.string.quick_add_title), style = MaterialTheme.typography.titleLarge)
+            Text(
+                stringResource(R.string.quick_add_subtitle),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            CaptureChoice(
+                R.string.describe_food,
+                R.string.describe_food_hint,
+                "capture-description",
+                Icons.AutoMirrored.Rounded.Chat,
+            ) { onMode(CaptureMode.Description) }
+            CaptureChoice(
+                R.string.take_food_photo,
+                R.string.take_food_photo_hint,
+                "capture-camera",
+                Icons.Rounded.PhotoCamera,
+            ) { onMode(CaptureMode.Camera) }
+            CaptureChoice(
+                R.string.import_food_photo,
+                R.string.import_food_photo_hint,
+                "capture-import",
+                Icons.Rounded.Image,
+            ) { onMode(CaptureMode.Import) }
+            CaptureChoice(
+                R.string.scan_barcode,
+                R.string.scan_barcode_hint,
+                "capture-barcode",
+                Icons.Rounded.QrCodeScanner,
+                onBarcode,
+            )
+            CaptureChoice(
+                R.string.manual_entry,
+                R.string.manual_entry_hint,
+                "capture-manual",
+                Icons.Rounded.Edit,
+                onManual,
+            )
+            Spacer(Modifier.height(BaselineSpacing.large))
+            CaptureChoice(
+                R.string.favorites,
+                R.string.favorites_hint,
+                "capture-favorites",
+                Icons.Rounded.Favorite,
+                onFavorites,
+            )
+            CaptureChoice(
+                R.string.recent_meals,
+                R.string.recent_meals_hint,
+                "capture-recent",
+                Icons.Rounded.History,
+                onRecent,
+            )
+        }
     }
 }
 
@@ -288,72 +356,137 @@ private fun DescriptionFlow(
 }
 
 @Composable
-private fun PhotoFlow(
+internal fun PhotoFlow(
     state: CaptureUiState,
     localError: String?,
     onText: (String) -> Unit,
     onMealType: (String) -> Unit,
-    onChooseAgain: () -> Unit,
+    onCamera: () -> Unit,
+    onImport: () -> Unit,
     onAnalyze: () -> Unit,
     onCancel: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val busy = state.stage in setOf(CaptureStage.Uploading, CaptureStage.Analyzing)
+    val hasPhoto = state.photoPath != null || state.attachmentId != null
     CaptureColumn {
         TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
+        Text(stringResource(R.string.meal_analysis_title), style = MaterialTheme.typography.titleLarge)
         Text(
-            stringResource(
-                if (state.mode == CaptureMode.Camera) {
-                    R.string.take_food_photo
-                } else {
-                    R.string.import_food_photo
-                },
-            ),
-            fontWeight = FontWeight.Bold,
+            stringResource(R.string.meal_analysis_subtitle),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
         )
-        MealTypeRow(state.mealType, onMealType)
-        OutlinedTextField(
-            value = state.text,
-            onValueChange = onText,
-            label = { Text(stringResource(R.string.photo_description_optional)) },
-            minLines = 2,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        state.photoPath?.let { path ->
-            remember(path) {
-                BitmapFactory.decodeFile(path)?.asImageBitmap()
-            }?.let { bitmap ->
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = stringResource(R.string.selected_food_photo),
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+        val preview = state.photoPath?.let { path ->
+            remember(path) { BitmapFactory.decodeFile(path)?.asImageBitmap() }
+        }
+        if (preview != null) {
+            Image(
+                bitmap = preview,
+                contentDescription = stringResource(R.string.selected_food_photo),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(280.dp)
+                    .clip(BaselineShapes.card),
+            )
+        } else {
+            Box(
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .clip(BaselineShapes.card)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Rounded.PhotoCamera,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Spacer(Modifier.height(BaselineSpacing.small))
+                    Text(stringResource(R.string.capture_ready_description))
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+            OutlinedButton(
+                enabled = !busy,
+                onClick = onCamera,
+                contentPadding = PaddingValues(horizontal = BaselineSpacing.compact),
+                modifier = Modifier.weight(1f).heightIn(min = 52.dp).testTag("capture-photo-camera"),
+            ) {
+                Icon(Icons.Rounded.PhotoCamera, contentDescription = null)
+                Spacer(Modifier.width(BaselineSpacing.small))
+                Text(stringResource(R.string.capture_take_photo_action), maxLines = 1)
+            }
+            OutlinedButton(
+                enabled = !busy,
+                onClick = onImport,
+                contentPadding = PaddingValues(horizontal = BaselineSpacing.compact),
+                modifier = Modifier.weight(1f).heightIn(min = 52.dp).testTag("capture-photo-import"),
+            ) {
+                Icon(Icons.Rounded.Image, contentDescription = null)
+                Spacer(Modifier.width(BaselineSpacing.small))
+                Text(stringResource(R.string.pick_food_photo), maxLines = 1)
+            }
+        }
+        BaselineCard(Modifier.fillMaxWidth()) {
+            Column(verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+                Text(
+                    stringResource(R.string.photo_description_optional),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                OutlinedTextField(
+                    value = state.text,
+                    onValueChange = onText,
+                    placeholder = { Text(stringResource(R.string.photo_description_placeholder)) },
+                    minLines = 3,
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    stringResource(R.string.character_count, state.text.length),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.End),
                 )
             }
         }
-        if (state.attachmentId != null && state.photoPath == null) {
-            Text(stringResource(R.string.photo_prepared))
-        }
-        OutlinedButton(
-            enabled = state.stage !in setOf(CaptureStage.Uploading, CaptureStage.Analyzing),
-            onClick = onChooseAgain,
-        ) {
-            Text(
-                stringResource(
-                    if (state.mode == CaptureMode.Camera) {
-                        R.string.retake_photo
-                    } else {
-                        R.string.replace_photo
-                    },
-                ),
-            )
-        }
-        localError?.let { Text(stringResource(captureErrorLabel(it))) }
-        CaptureStatus(state, onCancel)
-        Button(
-            enabled = (state.photoPath != null || state.attachmentId != null) &&
-                state.stage !in setOf(CaptureStage.Uploading, CaptureStage.Analyzing),
+        BaselinePrimaryButton(
+            text = stringResource(R.string.start_analysis),
+            enabled = hasPhoto && !busy,
             onClick = onAnalyze,
-        ) { Text(stringResource(R.string.analyze_meal)) }
+            icon = Icons.Rounded.AutoAwesome,
+            modifier = Modifier.testTag("capture-analyze-photo"),
+        )
+        BaselineCard(Modifier.fillMaxWidth().testTag("capture-analysis-status")) {
+            Column(verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+                Text(stringResource(R.string.analysis_status_title), style = MaterialTheme.typography.titleMedium)
+                if (state.stage in setOf(CaptureStage.Uploading, CaptureStage.Analyzing, CaptureStage.Error)) {
+                    CaptureStatus(state, onCancel)
+                } else {
+                    Text(
+                        stringResource(
+                            if (hasPhoto) R.string.capture_photo_ready_title else R.string.capture_ready_title,
+                        ),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        stringResource(
+                            if (hasPhoto) R.string.capture_photo_ready_description else R.string.capture_ready_description,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                localError?.let { Text(stringResource(captureErrorLabel(it))) }
+            }
+        }
+        Text(stringResource(R.string.meal_type), style = MaterialTheme.typography.labelLarge)
+        MealTypeRow(state.mealType, onMealType)
     }
 }
 
@@ -398,17 +531,46 @@ private fun CaptureChoice(
     title: Int,
     description: Int,
     tag: String,
+    icon: ImageVector,
     onClick: () -> Unit,
 ) {
-    Card(
+    Surface(
+        shape = de.baseline.nutrition.ui.theme.BaselineShapes.input,
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 60.dp)
             .testTag(tag)
             .clickable(onClick = onClick),
     ) {
-        Column(Modifier.padding(BaselineSpacing.medium)) {
-            Text(stringResource(title), fontWeight = FontWeight.Bold)
-            Text(stringResource(description))
+        Row(
+            modifier = Modifier.padding(BaselineSpacing.small),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            Box(
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+            ) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.width(BaselineSpacing.small))
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(title), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+                Text(
+                    stringResource(description),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

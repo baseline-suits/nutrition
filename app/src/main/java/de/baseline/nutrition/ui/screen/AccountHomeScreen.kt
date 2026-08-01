@@ -1,5 +1,7 @@
 package de.baseline.nutrition.ui.screen
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -7,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import de.baseline.nutrition.BuildConfig
 import de.baseline.nutrition.data.capture.CaptureRepository
@@ -28,14 +31,21 @@ import de.baseline.nutrition.ui.health.HealthConnectScreen
 import de.baseline.nutrition.ui.health.HealthConnectViewModel
 import de.baseline.nutrition.ui.LocaleController
 import de.baseline.nutrition.ui.capture.CaptureScreen
+import de.baseline.nutrition.ui.capture.CaptureMode
 import de.baseline.nutrition.ui.capture.CaptureViewModel
+import de.baseline.nutrition.ui.capture.QuickAddMenu
+import de.baseline.nutrition.ui.components.BaselineAppShell
+import de.baseline.nutrition.ui.components.MainDestination
 import de.baseline.nutrition.ui.reuse.ReuseMode
 import de.baseline.nutrition.ui.reuse.ReuseScreen
 import de.baseline.nutrition.ui.reuse.ReuseViewModel
 import de.baseline.nutrition.ui.settings.SettingsAppDetails
+import de.baseline.nutrition.ui.settings.CalorieBudgetScreen
 import de.baseline.nutrition.ui.settings.SettingsScreen
 import de.baseline.nutrition.ui.settings.SettingsViewModel
+import de.baseline.nutrition.ui.overview.OverviewScreen
 import kotlinx.coroutines.CoroutineDispatcher
+import java.time.LocalDate
 
 @Composable
 fun AccountHomeScreen(
@@ -87,8 +97,11 @@ fun AccountHomeScreen(
             onLoggedOut()
         }
     }
-    var activeFlow by rememberSaveable { mutableStateOf("diary") }
-    when (activeFlow) {
+    var activeFlow by rememberSaveable { mutableStateOf("overview") }
+    var showQuickAdd by rememberSaveable { mutableStateOf(false) }
+    var captureReturnFlow by rememberSaveable { mutableStateOf("overview") }
+    Box(Modifier.fillMaxSize()) {
+        when (activeFlow) {
         "capture" -> CaptureScreen(
             viewModel = captureViewModel,
             selectedDay = diaryState.selectedDay.toString(),
@@ -114,9 +127,13 @@ fun AccountHomeScreen(
                 activeFlow = "diary"
                 diaryViewModel.newManualEntry()
             },
+            onMenu = {
+                activeFlow = captureReturnFlow
+                showQuickAdd = true
+            },
             onClose = {
                 captureViewModel.complete()
-                activeFlow = "diary"
+                activeFlow = captureReturnFlow
             },
         )
         "barcode" -> BarcodeScreen(
@@ -139,7 +156,7 @@ fun AccountHomeScreen(
             },
             onClose = {
                 barcodeViewModel.complete()
-                activeFlow = "diary"
+                activeFlow = captureReturnFlow
             },
         )
         "favorites", "recent" -> ReuseScreen(
@@ -158,15 +175,7 @@ fun AccountHomeScreen(
                 activeFlow = "diary"
                 diaryViewModel.newManualEntry()
             },
-            onClose = { activeFlow = "diary" },
-        )
-        "history" -> HistoryScreen(
-            viewModel = historyViewModel,
-            onSelectDay = { day ->
-                activeFlow = "diary"
-                diaryViewModel.selectDay(day)
-            },
-            onClose = { activeFlow = "diary" },
+            onClose = { activeFlow = captureReturnFlow },
         )
         "health" -> HealthConnectScreen(
             viewModel = healthViewModel,
@@ -175,26 +184,134 @@ fun AccountHomeScreen(
                 activeFlow = "settings"
             },
         )
-        "settings" -> SettingsScreen(
-            viewModel = settingsViewModel,
-            onOpenHealth = { activeFlow = "health" },
-            onClose = {
-                diaryViewModel.refresh()
-                activeFlow = "diary"
-            },
-            onLoggedOut = onLoggedOut,
-        )
-        else -> DiaryScreen(
-            viewModel = diaryViewModel,
-            onQuickAdd = { activeFlow = "capture" },
-            onHistory = { activeFlow = "history" },
-            onSettings = {
-                settingsViewModel.refresh()
-                activeFlow = "settings"
-            },
-            healthConnectionLoading = healthState.loading,
-            healthAvailability = healthState.availability,
-            activeCaloriesPermission = healthState.permissions[HealthDataType.ActiveCalories],
-        )
+        else -> {
+            val diaryContent: @Composable () -> Unit = {
+                DiaryScreen(
+                    viewModel = diaryViewModel,
+                    onQuickAdd = {
+                        captureReturnFlow = "diary"
+                        showQuickAdd = true
+                    },
+                    onHistory = { activeFlow = "history" },
+                    healthConnectionLoading = healthState.loading,
+                    healthAvailability = healthState.availability,
+                    activeCaloriesPermission = healthState.permissions[HealthDataType.ActiveCalories],
+                )
+            }
+            val selected = when (activeFlow) {
+                "diary" -> MainDestination.Diary
+                "history" -> MainDestination.Statistics
+                "settings", "budget" -> MainDestination.Profile
+                else -> MainDestination.Overview
+            }
+            if (
+                selected == MainDestination.Diary &&
+                (diaryState.editor != null || diaryState.templateEditor != null)
+            ) {
+                diaryContent()
+            } else BaselineAppShell(
+                selected = selected,
+                showTopBar = activeFlow != "settings",
+                onSelected = { destination ->
+                    showQuickAdd = false
+                    activeFlow = when (destination) {
+                        MainDestination.Overview -> "overview"
+                        MainDestination.Diary -> "diary"
+                        MainDestination.Statistics -> "history"
+                        MainDestination.Profile -> {
+                            settingsViewModel.refresh()
+                            "settings"
+                        }
+                    }
+                },
+            ) {
+                when (selected) {
+                    MainDestination.Overview -> OverviewScreen(
+                        state = diaryState,
+                        onMeal = { meal ->
+                            diaryViewModel.edit(meal)
+                            activeFlow = "diary"
+                        },
+                        onAddMeal = {
+                            captureReturnFlow = "overview"
+                            showQuickAdd = true
+                        },
+                        onRefresh = diaryViewModel::refresh,
+                    )
+                    MainDestination.Diary -> diaryContent()
+                    MainDestination.Statistics -> HistoryScreen(
+                        viewModel = historyViewModel,
+                        onSelectDay = { day ->
+                            diaryViewModel.selectDay(day)
+                            activeFlow = "diary"
+                        },
+                        onClose = { activeFlow = "overview" },
+                    )
+                    MainDestination.Profile -> if (activeFlow == "budget") {
+                        CalorieBudgetScreen(
+                            state = settingsViewModel.state.collectAsState().value,
+                            budget = diaryState.summary?.targets
+                                ?.takeIf { diaryState.selectedDay == LocalDate.now() },
+                            loading = diaryState.loading,
+                            updateFailed = diaryState.error != null,
+                            onModeChange = diaryViewModel::setBudgetMode,
+                            onOpenHealth = { activeFlow = "health" },
+                            onClose = {
+                                settingsViewModel.refresh()
+                                activeFlow = "settings"
+                            },
+                        )
+                    } else {
+                        SettingsScreen(
+                            viewModel = settingsViewModel,
+                            onOpenBudget = {
+                                if (diaryState.selectedDay != LocalDate.now()) {
+                                    diaryViewModel.selectDay(LocalDate.now())
+                                }
+                                activeFlow = "budget"
+                            },
+                            onOpenHealth = { activeFlow = "health" },
+                            onClose = {
+                                diaryViewModel.refresh()
+                                activeFlow = "overview"
+                            },
+                            onLoggedOut = onLoggedOut,
+                        )
+                    }
+                }
+            }
+        }
+        }
+        if (showQuickAdd) {
+            QuickAddMenu(
+                onMode = { mode: CaptureMode ->
+                    captureViewModel.selectMode(mode)
+                    showQuickAdd = false
+                    activeFlow = "capture"
+                },
+                onBarcode = {
+                    captureViewModel.complete()
+                    showQuickAdd = false
+                    activeFlow = "barcode"
+                },
+                onFavorites = {
+                    captureViewModel.complete()
+                    showQuickAdd = false
+                    activeFlow = "favorites"
+                },
+                onRecent = {
+                    captureViewModel.complete()
+                    showQuickAdd = false
+                    activeFlow = "recent"
+                },
+                onManual = {
+                    captureViewModel.complete()
+                    showQuickAdd = false
+                    activeFlow = "diary"
+                    diaryViewModel.newManualEntry()
+                },
+                onBack = { showQuickAdd = false },
+            )
+        }
     }
 }

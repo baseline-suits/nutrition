@@ -1,6 +1,7 @@
 package de.baseline.nutrition.ui.capture
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -27,6 +28,52 @@ class CaptureFlowTest {
     @Test
     fun importHasDedicatedEntry() {
         assertEntry("capture-import", CaptureMode.Import)
+    }
+
+    @Test
+    fun manualHasDedicatedEntry() {
+        var selected = false
+        compose.setContent {
+            BaselineTheme {
+                QuickAddMenu(
+                    onMode = {},
+                    onBarcode = {},
+                    onFavorites = {},
+                    onRecent = {},
+                    onManual = { selected = true },
+                    onBack = {},
+                )
+            }
+        }
+        compose.onNodeWithTag("capture-manual").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(true, selected) }
+    }
+
+    @Test
+    fun photoAnalysisOffersBothPhotoSourcesAndRequiresAPhoto() {
+        var action = ""
+        compose.setContent {
+            BaselineTheme(darkTheme = true) {
+                PhotoFlow(
+                    state = CaptureUiState(mode = CaptureMode.Camera),
+                    localError = null,
+                    onText = {},
+                    onMealType = {},
+                    onCamera = { action = "camera" },
+                    onImport = { action = "import" },
+                    onAnalyze = { action = "analyze" },
+                    onCancel = {},
+                    onBack = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("capture-photo-camera").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("camera", action) }
+        compose.onNodeWithTag("capture-photo-import").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("import", action) }
+        compose.onNodeWithTag("capture-analyze-photo").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("capture-analysis-status").performScrollTo().assertIsDisplayed()
     }
 
     @Test

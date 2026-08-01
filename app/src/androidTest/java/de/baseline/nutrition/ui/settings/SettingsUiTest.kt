@@ -11,7 +11,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
-import de.baseline.nutrition.MainActivity
 import de.baseline.nutrition.data.settings.SettingsAccountDto
 import de.baseline.nutrition.data.settings.SettingsHealthAggregateDto
 import de.baseline.nutrition.data.settings.SettingsHealthSourceDto
@@ -43,6 +42,7 @@ class SettingsUiTest {
                     onCalculate = {},
                     onSaveProfile = {},
                     onLocale = {},
+                    onOpenBudget = {},
                     onOpenHealth = {},
                     onSync = {},
                     onDisconnectHealth = {},
@@ -62,10 +62,13 @@ class SettingsUiTest {
             "settings-language",
             "settings-profile",
             "settings-health-sync",
+            "settings-sync-section",
+            "settings-privacy",
             "settings-account",
-            "settings-danger",
         ).forEach { compose.onNodeWithTag(it).assertExists() }
 
+        compose.onNodeWithTag("settings-account-open").performScrollTo().performClick()
+        compose.onNodeWithTag("settings-danger").assertExists()
         compose.onNodeWithTag("settings-logout-all").performScrollTo().performClick()
         compose.onNodeWithTag("settings-confirm-logout-all").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(true, logoutAll) }
@@ -84,6 +87,7 @@ class SettingsUiTest {
                     onCalculate = {},
                     onSaveProfile = {},
                     onLocale = {},
+                    onOpenBudget = {},
                     onOpenHealth = {},
                     onSync = {},
                     onDisconnectHealth = {},
@@ -99,10 +103,11 @@ class SettingsUiTest {
             }
         }
 
-        compose.onNodeWithTag("settings-goal-method-manual").assertIsNotEnabled()
-        compose.onNodeWithTag("settings-budget-mode-fixed").assertIsNotEnabled()
-        compose.onNodeWithTag("settings-logout-all").assertIsNotEnabled()
-        compose.onNodeWithTag("settings-delete-account").assertIsNotEnabled()
+        compose.onNodeWithTag("settings-open-goals").assertIsNotEnabled()
+        compose.onNodeWithTag("settings-open-health").assertIsNotEnabled()
+        compose.onNodeWithTag("settings-sync-section").assertIsNotEnabled()
+        compose.onNodeWithTag("settings-account-open").assertIsNotEnabled()
+        compose.onNodeWithTag("settings-logout-device").assertIsNotEnabled()
     }
 
     @Test
@@ -137,6 +142,7 @@ class SettingsUiTest {
                     onCalculate = {},
                     onSaveProfile = {},
                     onLocale = {},
+                    onOpenBudget = {},
                     onOpenHealth = {},
                     onSync = {},
                     onDisconnectHealth = {},
@@ -152,6 +158,7 @@ class SettingsUiTest {
             }
         }
 
+        compose.onNodeWithTag("settings-sync-section").performScrollTo().performClick()
         compose.onNodeWithTag("settings-health-status").assertExists()
         compose.onNodeWithTag("settings-source-steps-automatic").assertExists()
         compose.onNodeWithTag("settings-source-steps-com.example.watch").assertExists()
@@ -168,6 +175,7 @@ class SettingsUiTest {
                     onCalculate = {},
                     onSaveProfile = {},
                     onLocale = {},
+                    onOpenBudget = {},
                     onOpenHealth = {},
                     onSync = {},
                     onDisconnectHealth = {},
@@ -197,17 +205,22 @@ class SettingsUiTest {
         )
         assertTrue(service.metaData.getBoolean("autoStoreLocales"))
 
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            scenario.onActivity { LocaleController.apply("ru") }
-            instrumentation.waitForIdleSync()
-            assertEquals("ru", AppCompatDelegate.getApplicationLocales().toLanguageTags())
+        ActivityScenario.launch(LocaleTestActivity::class.java).use { scenario ->
+            instrumentation.runOnMainSync { LocaleController.apply("ru") }
+            compose.waitUntil(5_000) {
+                AppCompatDelegate.getApplicationLocales().toLanguageTags() == "ru"
+            }
 
             scenario.recreate()
-            instrumentation.waitForIdleSync()
+            compose.waitUntil(5_000) {
+                AppCompatDelegate.getApplicationLocales().toLanguageTags() == "ru"
+            }
             assertEquals("ru", AppCompatDelegate.getApplicationLocales().toLanguageTags())
 
-            scenario.onActivity { LocaleController.apply("de") }
-            instrumentation.waitForIdleSync()
+            instrumentation.runOnMainSync { LocaleController.apply("de") }
+            compose.waitUntil(5_000) {
+                AppCompatDelegate.getApplicationLocales().toLanguageTags() == "de"
+            }
         }
     }
 
