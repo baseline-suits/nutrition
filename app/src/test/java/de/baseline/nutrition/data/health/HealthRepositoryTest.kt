@@ -5,6 +5,7 @@ import de.baseline.nutrition.domain.health.HealthDataType
 import de.baseline.nutrition.domain.health.HealthPermissionState
 import de.baseline.nutrition.domain.health.HealthReadWindow
 import de.baseline.nutrition.domain.health.HealthRecord
+import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
 import kotlinx.coroutines.test.runTest
@@ -155,10 +156,108 @@ class HealthRepositoryTest {
         assertTrue(result.sourceSummaries.isEmpty())
     }
 
+    @Test
+    fun offlineRetryReusesExactBatchAndClearsRawRecordsAfterSuccess() = runTest {
+        val gateway = FakeHealthConnectGateway()
+        val settings = FakeHealthSettingsStorage()
+        val remote = FakeHealthSyncRemoteDataSource(failures = 1)
+        val storage = FakeHealthSyncStorage()
+        val repository = syncRepository(
+            gateway = gateway,
+            settings = settings,
+            remote = remote,
+            storage = storage,
+            requestIds = ArrayDeque(listOf("request-offline-1")),
+        )
+        grant(gateway, repository, HealthDataType.Steps)
+        gateway.pages[HealthDataType.Steps to null] = HealthRecordPage(
+            listOf(record(HealthDataType.Steps, "source.one", "offline-record")),
+            null,
+        )
+
+        runCatching { repository.sync(HealthDataType.Steps, window()) }
+            .onSuccess { error("network_failure_expected") }
+            .onFailure { assertTrue(it is IOException) }
+        val pending = storage.read("user-1").pending.getValue("steps")
+
+        val result = repository.sync(HealthDataType.Steps, window())
+
+        assertEquals(2, remote.requests.size)
+        assertEquals(remote.requests[0], remote.requests[1])
+        assertEquals(pending, remote.requests[1])
+        assertEquals(1, result.recordCount)
+        assertTrue(result.cursorCommitted)
+        assertTrue(storage.read("user-1").pending.isEmpty())
+        assertEquals(
+            "steps:2026-07-02T00:00:00Z",
+            storage.read("user-1").cursors.getValue("steps").cursor,
+        )
+    }
+
+    @Test
+    fun partialResponseKeepsRawDataRotatesCompletedRequestAndPreservesCursor() = runTest {
+        val gateway = FakeHealthConnectGateway()
+        val settings = FakeHealthSettingsStorage()
+        val remote = FakeHealthSyncRemoteDataSource(partialResponses = 1)
+        val storage = FakeHealthSyncStorage()
+        val requestIds = ArrayDeque(listOf("request-partial-1", "request-partial-2"))
+        val repository = syncRepository(gateway, settings, remote, storage, requestIds)
+        grant(gateway, repository, HealthDataType.ActiveCalories)
+        gateway.pages[HealthDataType.ActiveCalories to null] = HealthRecordPage(
+            listOf(record(HealthDataType.ActiveCalories, "source.one", "partial-record")),
+            null,
+        )
+
+        val partial = repository.sync(HealthDataType.ActiveCalories, window())
+
+        assertFalse(partial.cursorCommitted)
+        assertEquals(1, partial.rejectedCount)
+        assertTrue(storage.read("user-1").cursors.isEmpty())
+        assertEquals(
+            "request-partial-2",
+            storage.read("user-1").pending.getValue("active_calories").requestId,
+        )
+
+        val completed = repository.sync(HealthDataType.ActiveCalories, window())
+
+        assertTrue(completed.cursorCommitted)
+        assertEquals(
+            listOf("request-partial-1", "request-partial-2"),
+            remote.requests.map(HealthSyncBatchPayload::requestId),
+        )
+        assertTrue(storage.read("user-1").pending.isEmpty())
+        assertEquals(1, gateway.readTokens.size)
+    }
+
     private fun window() = HealthReadWindow(
         Instant.parse("2026-07-01T00:00:00Z"),
         Instant.parse("2026-07-02T00:00:00Z"),
         ZoneId.of("Europe/Berlin"),
+    )
+
+    private suspend fun grant(
+        gateway: FakeHealthConnectGateway,
+        repository: DefaultHealthRepository,
+        type: HealthDataType,
+    ) {
+        val request = repository.permissionRequest(type)
+        gateway.granted += request.permissions
+        repository.recordPermissionResult(request, gateway.granted)
+    }
+
+    private fun syncRepository(
+        gateway: FakeHealthConnectGateway,
+        settings: FakeHealthSettingsStorage,
+        remote: FakeHealthSyncRemoteDataSource,
+        storage: FakeHealthSyncStorage,
+        requestIds: ArrayDeque<String>,
+    ) = DefaultHealthRepository(
+        gateway = gateway,
+        settings = settings,
+        remote = remote,
+        syncStorage = storage,
+        currentUserId = { "user-1" },
+        requestId = { requestIds.removeFirst() },
     )
 
     private fun record(
@@ -186,6 +285,56 @@ class HealthRepositoryTest {
         },
         lastModifiedTimeUtc = modified,
     )
+}
+
+private class FakeHealthSyncStorage : HealthSyncStorage {
+    private val snapshots = mutableMapOf<String, HealthSyncSnapshot>()
+    override fun installationId(): String = "installation-test"
+    override fun read(userId: String): HealthSyncSnapshot = snapshots[userId] ?: HealthSyncSnapshot()
+    override fun write(userId: String, snapshot: HealthSyncSnapshot) {
+        snapshots[userId] = snapshot
+    }
+    override fun clear(userId: String) {
+        snapshots.remove(userId)
+    }
+}
+
+private class FakeHealthSyncRemoteDataSource(
+    private var failures: Int = 0,
+    private var partialResponses: Int = 0,
+) : HealthSyncRemoteDataSource {
+    val requests = mutableListOf<HealthSyncBatchPayload>()
+
+    override suspend fun sync(payload: HealthSyncBatchPayload): HealthSyncBatchResponse {
+        requests += payload
+        if (failures > 0) {
+            failures -= 1
+            throw IOException("offline")
+        }
+        val partial = partialResponses > 0
+        if (partial) partialResponses -= 1
+        val section = payload.sections.single()
+        return HealthSyncBatchResponse(
+            schemaVersion = payload.schemaVersion,
+            requestId = payload.requestId,
+            sections = listOf(
+                HealthSyncSectionResponse(
+                    dataType = section.dataType,
+                    cursorCommitted = !partial,
+                    reconciledDeletions = 0,
+                    results = section.records.map { record ->
+                        HealthSyncElementResponse(
+                            dataType = record.dataType,
+                            externalRecordId = record.externalRecordId,
+                            originPackage = record.originPackage,
+                            status = if (partial) "rejected" else "created",
+                            code = if (partial) "invalid_record" else null,
+                        )
+                    },
+                ),
+            ),
+        )
+    }
 }
 
 private class FakeHealthSettingsStorage : HealthSettingsStorage {

@@ -12,6 +12,10 @@ import de.baseline.nutrition.domain.health.HealthReadWindow
 import de.baseline.nutrition.domain.health.HealthRecord
 import de.baseline.nutrition.domain.health.HealthRecordAggregator
 import de.baseline.nutrition.domain.health.HealthRepository
+import de.baseline.nutrition.domain.health.HealthSyncResult
+import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal data class HealthSetting(
     val enabled: Boolean = false,
@@ -53,11 +57,12 @@ internal class SecureHealthSettingsStorage(
 class DefaultHealthRepository internal constructor(
     private val gateway: HealthConnectGateway,
     private val settings: HealthSettingsStorage,
+    private val remote: HealthSyncRemoteDataSource? = null,
+    private val syncStorage: HealthSyncStorage? = null,
+    private val currentUserId: () -> String? = { null },
+    private val requestId: () -> String = { UUID.randomUUID().toString() },
 ) : HealthRepository {
-    constructor(gateway: HealthConnectGateway, sessionStore: SecureSessionStore) : this(
-        gateway,
-        SecureHealthSettingsStorage(sessionStore),
-    )
+    private val syncMutex = Mutex()
 
     override suspend fun connection(): HealthConnectionSnapshot {
         val availability = gateway.availability()
@@ -102,6 +107,7 @@ class DefaultHealthRepository internal constructor(
             require(gateway.permission(type) in granted) { "permission_missing" }
         }
         settings.write(type, current.copy(enabled = enabled))
+        if (!enabled) syncMutex.withLock { clearPending(type) }
     }
 
     override suspend fun read(type: HealthDataType, window: HealthReadWindow): HealthReadResult {
@@ -146,11 +152,103 @@ class DefaultHealthRepository internal constructor(
         )
     }
 
+    override suspend fun sync(
+        type: HealthDataType,
+        window: HealthReadWindow,
+    ): HealthSyncResult = syncMutex.withLock {
+        val remote = requireNotNull(remote) { "health_sync_unavailable" }
+        val storage = requireNotNull(syncStorage) { "health_sync_unavailable" }
+        val userId = requireNotNull(currentUserId()) { "authenticated_user" }
+        val typeName = type.apiName()
+        var snapshot = storage.read(userId)
+        var batch = snapshot.pending[typeName]
+        if (batch == null) {
+            val read = read(type, window)
+            if (read.truncated || read.records.size > MAX_BATCH_RECORDS) {
+                return@withLock HealthSyncResult(
+                    type = type,
+                    recordCount = read.records.size,
+                    sourceCount = read.records.map(HealthRecord::originPackage).distinct().size,
+                    truncated = true,
+                    cursorCommitted = false,
+                    reconciledDeletions = 0,
+                    rejectedCount = 0,
+                )
+            }
+            batch = HealthSyncBatchPayload(
+                requestId = requestId(),
+                installationId = storage.installationId(),
+                sections = listOf(
+                    HealthSyncSectionPayload(
+                        dataType = typeName,
+                        windowStart = window.startInclusive.toString(),
+                        windowEnd = window.endExclusive.toString(),
+                        cursor = "$typeName:${window.endExclusive}",
+                        records = read.records.map(HealthRecord::toSyncPayload),
+                    ),
+                ),
+            )
+            snapshot = snapshot.copy(pending = snapshot.pending + (typeName to batch))
+            storage.write(userId, snapshot)
+        }
+        val response = remote.sync(batch)
+        check(response.schemaVersion == batch.schemaVersion) { "health_sync_schema_mismatch" }
+        check(response.requestId == batch.requestId) { "health_sync_request_mismatch" }
+        val responseSection = response.sections.singleOrNull()
+        check(responseSection?.dataType == typeName) { "health_sync_section_mismatch" }
+        val section = batch.sections.single()
+        val rejected = responseSection.results.count { it.status == "rejected" }
+        snapshot = storage.read(userId)
+        val currentPending = snapshot.pending[typeName]
+        if (currentPending?.requestId == batch.requestId) {
+            snapshot = if (responseSection.cursorCommitted && rejected == 0) {
+                snapshot.copy(
+                    pending = snapshot.pending - typeName,
+                    cursors = snapshot.cursors + (
+                        typeName to StoredHealthCursor(
+                            cursor = section.cursor,
+                            windowEnd = section.windowEnd,
+                        )
+                    ),
+                )
+            } else {
+                snapshot.copy(
+                    pending = snapshot.pending + (
+                        typeName to batch.copy(requestId = requestId())
+                    ),
+                )
+            }
+            storage.write(userId, snapshot)
+        }
+        HealthSyncResult(
+            type = type,
+            recordCount = section.records.size,
+            sourceCount = section.records.map(HealthSyncRecordPayload::originPackage).distinct().size,
+            truncated = false,
+            cursorCommitted = responseSection.cursorCommitted && rejected == 0,
+            reconciledDeletions = responseSection.reconciledDeletions,
+            rejectedCount = rejected,
+        )
+    }
+
     override suspend fun disconnect() {
         if (gateway.availability() == HealthAvailability.Available) {
             gateway.revokeAllPermissions()
         }
         HealthDataType.entries.forEach { settings.write(it, HealthSetting()) }
+        syncMutex.withLock {
+            currentUserId()?.let { userId -> syncStorage?.clear(userId) }
+        }
+    }
+
+    private fun clearPending(type: HealthDataType) {
+        val storage = syncStorage ?: return
+        val userId = currentUserId() ?: return
+        val snapshot = storage.read(userId)
+        val typeName = type.apiName()
+        if (typeName in snapshot.pending) {
+            storage.write(userId, snapshot.copy(pending = snapshot.pending - typeName))
+        }
     }
 
     private fun permissionState(type: HealthDataType, granted: Set<String>): HealthPermissionState {
@@ -169,5 +267,6 @@ class DefaultHealthRepository internal constructor(
     companion object {
         const val PAGE_SIZE = 200
         const val MAX_PAGES = 100
+        const val MAX_BATCH_RECORDS = 500
     }
 }

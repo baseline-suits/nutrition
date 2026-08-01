@@ -6,5 +6,6 @@ interface HealthRepository {
     suspend fun recordPermissionResult(request: HealthPermissionRequest, granted: Set<String>)
     suspend fun setEnabled(type: HealthDataType, enabled: Boolean)
     suspend fun read(type: HealthDataType, window: HealthReadWindow): HealthReadResult
+    suspend fun sync(type: HealthDataType, window: HealthReadWindow): HealthSyncResult
     suspend fun disconnect()
 }

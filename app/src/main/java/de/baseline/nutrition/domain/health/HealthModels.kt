@@ -111,6 +111,16 @@ data class HealthReadResult(
     val truncated: Boolean,
 )
 
+data class HealthSyncResult(
+    val type: HealthDataType,
+    val recordCount: Int,
+    val sourceCount: Int,
+    val truncated: Boolean,
+    val cursorCommitted: Boolean,
+    val reconciledDeletions: Int,
+    val rejectedCount: Int,
+)
+
 object HealthRecordAggregator {
     fun summarize(records: List<HealthRecord>): List<HealthSourceSummary> = records
         .groupBy { Triple(it.type, it.originPackage, it.assignedLocalDay()) }

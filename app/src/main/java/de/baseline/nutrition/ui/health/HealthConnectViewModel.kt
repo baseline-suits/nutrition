@@ -26,6 +26,8 @@ data class HealthTypeReadState(
     val recordCount: Int? = null,
     val sourceCount: Int? = null,
     val truncated: Boolean = false,
+    val cursorCommitted: Boolean = false,
+    val rejectedCount: Int = 0,
     val error: Boolean = false,
 )
 
@@ -97,7 +99,7 @@ class HealthConnectViewModel(
             val end = Instant.now()
             runCatching {
                 withContext(ioDispatcher) {
-                    repository.read(
+                    repository.sync(
                         type,
                         HealthReadWindow(
                             startInclusive = end.minus(READ_WINDOW),
@@ -110,9 +112,11 @@ class HealthConnectViewModel(
                 mutableState.update {
                     it.copy(
                         reads = it.reads + (type to HealthTypeReadState(
-                            recordCount = result.records.size,
-                            sourceCount = result.records.map { record -> record.originPackage }.distinct().size,
+                            recordCount = result.recordCount,
+                            sourceCount = result.sourceCount,
                             truncated = result.truncated,
+                            cursorCommitted = result.cursorCommitted,
+                            rejectedCount = result.rejectedCount,
                         )),
                     )
                 }

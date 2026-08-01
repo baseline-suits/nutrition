@@ -216,8 +216,12 @@ private fun HealthReadStatus(read: HealthTypeReadState) {
     val message = when {
         read.loading -> stringResource(R.string.health_connect_reading)
         read.error -> stringResource(R.string.health_connect_read_error)
-        read.recordCount == 0 -> stringResource(R.string.health_connect_empty)
         read.truncated -> stringResource(R.string.health_connect_too_many_records)
+        !read.cursorCommitted -> stringResource(
+            R.string.health_connect_sync_partial,
+            read.rejectedCount,
+        )
+        read.recordCount == 0 -> stringResource(R.string.health_connect_empty)
         else -> stringResource(
             R.string.health_connect_data_ready,
             read.recordCount ?: 0,

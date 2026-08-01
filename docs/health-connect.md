@@ -14,10 +14,13 @@ vollständiger Kalorientracker.
   Seiten brechen als unvollständiger Lauf ab; daraus wird kein Teilwert gebildet.
 - Records werden während einer Abfrage anhand Ursprungspaket und externer Record-ID
   dedupliziert. Bei einer Korrektur gilt nur die jüngste `lastModifiedTime`.
-- Rohwerte werden für ID-291 nicht persistent gespeichert. Die UI hält lediglich
-  Anzahl, Quellenanzahl und Leer-/Fehlerstatus, solange die Ansicht aktiv ist.
-- Abmeldung und Kontolöschung leeren die verschlüsselt und nutzergebunden gespeicherten
-  Aktivierungs-/Berechtigungsmetadaten zusammen mit der Sitzung.
+- Rohwerte werden nur als verschlüsselter Pending-Batch gespeichert, bevor der
+  Serveraufruf beginnt. Nach bestätigter vollständiger Verarbeitung wird dieser
+  Batch entfernt; lokal bleiben nur Cursor und Berechtigungsmetadaten.
+- Eine Abmeldung leert Aktivierungs-/Berechtigungsmetadaten zusammen mit der Sitzung.
+  Ein noch unbestätigter Batch bleibt verschlüsselt und für andere Konten unzugänglich,
+  damit dasselbe Konto ihn nach erneuter Anmeldung exakt wiederholen kann. „Verbindung
+  trennen“ und Kontolöschung entfernen auch diesen Batch.
 
 ## Zeit- und Aggregationsregeln
 
@@ -33,8 +36,42 @@ vollständiger Kalorientracker.
   unterscheidbar und der Summenwert bleibt absichtlich leer.
 - Gewicht bleibt eine Folge einzelner Messungen und wird in dieser Schicht nicht
   gemittelt.
-- Verschiedene Ursprungspakete werden nie still zusammengeführt oder priorisiert.
+- Die lokale Leseschicht führt verschiedene Ursprungspakete nie still zusammen.
 
 Die lokale Schicht liest ausschließlich Rohrecords und mischt sie nicht mit der
 Health-Connect-Aggregat-API. So werden Roh- und Aggregatwerte nicht doppelt gezählt.
-Backend-Synchronisierung und eine explizite Quellenentscheidung gehören zu ID-295.
+
+## Synchronisierung und Retry
+
+- Ein Batch verwendet den Vertrag `health-sync/1.0`, enthält höchstens 500 Records
+  und ist mit einer installationsstabilen ID sowie einer zufälligen Request-ID
+  versehen.
+- Der vollständige Request wird vor dem Netzaufruf verschlüsselt gespeichert. Ist
+  das Ergebnis wegen eines Netzfehlers unbekannt, sendet die App exakt denselben
+  Request mit derselben Request-ID erneut.
+- Ein abgewiesenes Element verhindert Cursorfortschritt und Reconciliation für den
+  Abschnitt. Gültige Elemente bleiben serverseitig verarbeitet; der vollständige
+  Abschnitt erhält für einen erneuten Versuch eine neue Request-ID.
+- Ein vollständiger leerer Abschnitt ist ein gültiger Abgleich und kann zuvor
+  sichtbare, inzwischen entfernte Records reconciliieren.
+- Serverseitig ist der fachliche Schlüssel Nutzer, Datentyp, Ursprungspaket und
+  externe Record-ID. Eine Geräte- oder Installations-ID allein dedupliziert nicht.
+- Jede Installation führt eine eigene Sichtung desselben Records. Fehlt ein Record
+  in einem vollständig verarbeiteten Abschnitt, wird nur diese Sichtung deaktiviert.
+  Der Record wird erst tombstoniert, wenn ihn keine Installation mehr aktiv sieht.
+- Explizite Tombstones schützen anhand ihrer Health-Connect-Änderungszeit vor einer
+  veralteten Wiederherstellung. Korrekturen mit neuerer Änderung ersetzen die vorige
+  Version und berechnen betroffene Tage deterministisch neu.
+
+## Serverseitige Quellenentscheidung
+
+- Rohrecords bleiben von Tagesaggregaten getrennt und nennen Ursprung, Importzeit,
+  letzte Änderung, Zeitzone und aktive Installationssichtungen.
+- Überlappen mehrere Ursprungspakete am selben lokalen Tag, bleibt der kombinierte
+  Wert im Status `conflict` leer. Nicht überlappende Quellen dürfen nach denselben
+  Zeitregeln zusammengeführt werden.
+- Eine bevorzugte Quelle pro Datentyp macht den gewählten Wert und die Auswahl im
+  Aggregat sichtbar. Das Entfernen der Präferenz berechnet den ursprünglichen
+  Konfliktstatus neu; keine Rohquelle wird dabei gelöscht.
+- Gewicht bleibt auch serverseitig eine Messreihe. Schlaf wird dem Aufwachdatum
+  zugeordnet; Schlaf- und Trainingsintervalle werden als Vereinigungsmenge berechnet.

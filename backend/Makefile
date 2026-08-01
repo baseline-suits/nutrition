@@ -19,7 +19,8 @@ ci-unit:
 	$(PYTEST) -q tests/test_foundation.py -k "expired_access_code or expired_session"
 
 ci-api:
-	$(PYTEST) -q tests/test_api.py tests/test_analysis.py tests/test_uploads.py tests/test_products.py tests/test_reuse.py tests/test_history.py tests/test_deletion.py
+	$(PYTEST) -q tests/test_api.py tests/test_analysis.py tests/test_uploads.py tests/test_products.py \
+		tests/test_reuse.py tests/test_history.py tests/test_deletion.py tests/test_health_sync.py
 
 ci-database:
 	$(PYTEST) -q tests/test_foundation.py

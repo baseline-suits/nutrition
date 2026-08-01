@@ -9,7 +9,10 @@ import de.baseline.nutrition.data.auth.HttpAuthRepository
 import de.baseline.nutrition.data.capture.CaptureRepository
 import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.health.AndroidHealthConnectGateway
+import de.baseline.nutrition.data.health.ApiHealthSyncRemoteDataSource
 import de.baseline.nutrition.data.health.DefaultHealthRepository
+import de.baseline.nutrition.data.health.EncryptedHealthSyncStore
+import de.baseline.nutrition.data.health.SecureHealthSettingsStorage
 import de.baseline.nutrition.data.network.ApiClient
 import de.baseline.nutrition.data.network.ServerSettingsStore
 import de.baseline.nutrition.data.profile.ProfileRepository
@@ -37,6 +40,7 @@ class AppContainer(
     private val api = ApiClient(serverSettings::currentUrl, sessionStore)
     private val syncScheduler = WorkManagerMealSyncScheduler(context)
     private val mealQueueStore = EncryptedMealQueueStore(context)
+    private val healthSyncStore = EncryptedHealthSyncStore(context)
     private val mealSyncManager = MealSyncManager(
         store = mealQueueStore,
         remote = ApiMealRemoteDataSource(api),
@@ -45,14 +49,20 @@ class AppContainer(
     )
     val diaryRepository = DiaryRepository(api, sessionStore, mealSyncManager)
     val healthRepository = DefaultHealthRepository(
-        AndroidHealthConnectGateway(context.applicationContext),
-        sessionStore,
+        gateway = AndroidHealthConnectGateway(context.applicationContext),
+        settings = SecureHealthSettingsStorage(sessionStore),
+        remote = ApiHealthSyncRemoteDataSource(api),
+        syncStorage = healthSyncStore,
+        currentUserId = sessionStore::readUserId,
     )
     val authRepository: AuthRepository = HttpAuthRepository(
         api,
         sessionStore,
         syncScheduler,
-        diaryRepository::clearLocalData,
+        localDataCleaner = { userId ->
+            diaryRepository.clearLocalData(userId)
+            healthSyncStore.clear(userId)
+        },
     )
     val sessionRepository = authRepository
     val profileRepository = ProfileRepository(api)

@@ -8,7 +8,9 @@ def reset_in_memory_limits():
     main.auth_limit.entries.clear()
     main.analysis_limit.entries.clear()
     main.off_limit.entries.clear()
+    main.health_sync_limit.entries.clear()
     yield
     main.auth_limit.entries.clear()
     main.analysis_limit.entries.clear()
     main.off_limit.entries.clear()
+    main.health_sync_limit.entries.clear()

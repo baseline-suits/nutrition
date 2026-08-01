@@ -89,6 +89,26 @@ HISTORY_TARGET_FIELDS = {
     "carbohydrates": "target_carbs_g",
     "fat": "target_fat_g",
 }
+HEALTH_TYPES = {"steps", "sleep", "active_calories", "exercise", "weight"}
+HEALTH_UNITS = {
+    "steps": "count",
+    "sleep": "s",
+    "active_calories": "kcal",
+    "exercise": "s",
+    "weight": "kg",
+}
+HEALTH_MAX_VALUES = {
+    "steps": Decimal("100000000"),
+    "sleep": Decimal(str(30 * 24 * 60 * 60)),
+    "active_calories": Decimal("1000000"),
+    "exercise": Decimal(str(30 * 24 * 60 * 60)),
+    "weight": Decimal("1000"),
+}
+HEALTH_MAX_BATCH_RECORDS = 500
+HEALTH_MAX_WINDOW = timedelta(days=30)
+HEALTH_MAX_RECORD_AGE = timedelta(days=3650)
+HEALTH_FUTURE_TOLERANCE = timedelta(days=1)
+HEALTH_ORIGIN_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$")
 logger = logging.getLogger("baseline_api")
 Image.MAX_IMAGE_PIXELS = UPLOAD_MAX_PIXELS
 
@@ -214,6 +234,7 @@ class SlidingWindow:
 auth_limit = SlidingWindow()
 analysis_limit = SlidingWindow(attempts=8, window_seconds=60)
 off_limit = SlidingWindow(attempts=30, window_seconds=60)
+health_sync_limit = SlidingWindow(attempts=30, window_seconds=60)
 
 
 class Credentials(BaseModel):
@@ -933,6 +954,132 @@ class ProfileInput(BaseModel):
         except ZoneInfoNotFoundError as error:
             raise ValueError("Unbekannte Zeitzone") from error
         return value
+
+
+class HealthSegmentInput(BaseModel):
+    start_time: datetime
+    end_time: datetime
+    segment_type: int
+
+
+class HealthSegmentOutput(BaseModel):
+    start_time: datetime
+    end_time: datetime
+    segment_type: int
+
+
+class HealthSyncRecordInput(BaseModel):
+    operation: Literal["upsert", "delete"] = "upsert"
+    data_type: str = Field(min_length=1, max_length=40)
+    external_record_id: str = Field(min_length=1, max_length=500)
+    origin_package: str = Field(min_length=1, max_length=250)
+    origin_app_name: str | None = Field(default=None, max_length=250)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    zone_id: str | None = Field(default=None, min_length=1, max_length=80)
+    start_offset_seconds: int | None = None
+    end_offset_seconds: int | None = None
+    value: Decimal | None = None
+    unit: str | None = Field(default=None, max_length=20)
+    last_modified_time: datetime
+    detail_type: int | None = None
+    segments: list[HealthSegmentInput] = Field(default_factory=list, max_length=100)
+
+
+class HealthSyncSectionInput(BaseModel):
+    data_type: str = Field(min_length=1, max_length=40)
+    window_start: datetime
+    window_end: datetime
+    cursor: str = Field(min_length=1, max_length=500)
+    complete: bool = True
+    records: list[HealthSyncRecordInput] = Field(default_factory=list, max_length=500)
+
+
+class HealthSyncBatchInput(BaseModel):
+    schema_version: Literal["health-sync/1.0"] = "health-sync/1.0"
+    request_id: str = Field(min_length=8, max_length=200)
+    installation_id: str = Field(min_length=8, max_length=200)
+    sections: list[HealthSyncSectionInput] = Field(min_length=1, max_length=5)
+
+
+class HealthSyncElementResult(BaseModel):
+    data_type: str
+    external_record_id: str
+    origin_package: str
+    status: Literal["created", "unchanged", "updated", "deleted", "conflict", "rejected"]
+    code: str | None = None
+
+
+class HealthSyncSectionResult(BaseModel):
+    data_type: str
+    cursor_committed: bool
+    reconciled_deletions: int
+    results: list[HealthSyncElementResult]
+
+
+class HealthSyncBatchResponse(BaseModel):
+    schema_version: Literal["health-sync/1.0"] = "health-sync/1.0"
+    request_id: str
+    sections: list[HealthSyncSectionResult]
+
+
+class HealthRecordOutput(BaseModel):
+    data_type: str
+    external_record_id: str
+    origin_package: str
+    origin_app_name: str | None
+    start_time: datetime
+    end_time: datetime
+    zone_id: str
+    start_offset_seconds: int | None
+    end_offset_seconds: int | None
+    local_day: date
+    value: Decimal
+    unit: str
+    last_modified_time: datetime
+    detail_type: int | None
+    segments: list[HealthSegmentOutput]
+
+
+class HealthAggregateSourceOutput(BaseModel):
+    origin_package: str
+    record_count: int
+    value: Decimal | None
+    overlap_detected: bool
+    selected: bool
+
+
+class HealthAggregateOutput(BaseModel):
+    data_type: str
+    local_day: date
+    status: Literal["ready", "conflict", "series"]
+    value: Decimal | None
+    unit: str
+    selected_origin_package: str | None
+    sources: list[HealthAggregateSourceOutput]
+
+
+class HealthSourcePreferenceInput(BaseModel):
+    origin_package: str = Field(min_length=1, max_length=250)
+
+
+class HealthSourcePreferenceOutput(BaseModel):
+    data_type: str
+    origin_package: str
+    updated_at: datetime
+
+
+class HealthSyncCursorOutput(BaseModel):
+    installation_id: str
+    data_type: str
+    cursor: str
+    window_end: datetime
+    updated_at: datetime
+
+
+class HealthSyncStateOutput(BaseModel):
+    cursors: list[HealthSyncCursorOutput]
+    source_preferences: list[HealthSourcePreferenceOutput]
 
 
 def object_path(key: str) -> Path:
@@ -1899,6 +2046,702 @@ def write_private_food_nutrients(
         )
 
 
+def health_aware(value: datetime | None) -> bool:
+    return value is not None and value.tzinfo is not None and value.utcoffset() is not None
+
+
+def health_decimal(value: Decimal) -> str:
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
+def health_delta_seconds(start: datetime, end: datetime) -> Decimal:
+    delta = end - start
+    return Decimal(delta.days * 86400 + delta.seconds) + Decimal(delta.microseconds) / Decimal(
+        1_000_000
+    )
+
+
+def health_section_error(section: HealthSyncSectionInput) -> str | None:
+    if section.data_type not in HEALTH_TYPES:
+        return "unsupported_data_type"
+    if not health_aware(section.window_start) or not health_aware(section.window_end):
+        return "timezone_required"
+    if section.window_start >= section.window_end:
+        return "invalid_window"
+    if section.window_end - section.window_start > HEALTH_MAX_WINDOW:
+        return "window_too_large"
+    if section.window_end > now() + HEALTH_FUTURE_TOLERANCE:
+        return "future_window"
+    if section.window_start < now() - HEALTH_MAX_RECORD_AGE:
+        return "window_too_old"
+    return None
+
+
+def health_record_error(
+    record: HealthSyncRecordInput,
+    section: HealthSyncSectionInput,
+) -> str | None:
+    if record.data_type not in HEALTH_TYPES or record.data_type != section.data_type:
+        return "data_type_mismatch"
+    if not HEALTH_ORIGIN_PATTERN.fullmatch(record.origin_package):
+        return "invalid_origin_package"
+    if not health_aware(record.last_modified_time):
+        return "timezone_required"
+    if record.last_modified_time > now() + HEALTH_FUTURE_TOLERANCE:
+        return "future_last_modified"
+    if record.operation == "delete":
+        if record.segments:
+            return "delete_has_segments"
+        return None
+    required = (
+        record.start_time,
+        record.end_time,
+        record.zone_id,
+        record.value,
+        record.unit,
+    )
+    if any(value is None for value in required):
+        return "missing_record_field"
+    assert record.start_time is not None
+    assert record.end_time is not None
+    assert record.zone_id is not None
+    assert record.value is not None
+    assert record.unit is not None
+    if not health_aware(record.start_time) or not health_aware(record.end_time):
+        return "timezone_required"
+    try:
+        ZoneInfo(record.zone_id)
+    except ZoneInfoNotFoundError:
+        return "invalid_zone_id"
+    if record.unit != HEALTH_UNITS[record.data_type]:
+        return "invalid_unit"
+    if not record.value.is_finite() or record.value < 0:
+        return "invalid_value"
+    if record.data_type == "weight" and record.value <= 0:
+        return "invalid_value"
+    if record.value > HEALTH_MAX_VALUES[record.data_type]:
+        return "value_too_large"
+    if record.data_type == "steps" and record.value != record.value.to_integral_value():
+        return "invalid_value"
+    for offset in (record.start_offset_seconds, record.end_offset_seconds):
+        if offset is not None and not -64800 <= offset <= 64800:
+            return "invalid_zone_offset"
+    if record.start_time < now() - HEALTH_MAX_RECORD_AGE:
+        return "record_too_old"
+    if record.end_time > now() + HEALTH_FUTURE_TOLERANCE:
+        return "future_record"
+    if record.data_type == "weight":
+        if record.start_time != record.end_time:
+            return "invalid_measurement_time"
+        if not section.window_start <= record.start_time < section.window_end:
+            return "record_outside_window"
+    else:
+        if record.start_time >= record.end_time:
+            return "invalid_interval"
+        if record.end_time - record.start_time > HEALTH_MAX_WINDOW:
+            return "interval_too_large"
+        if not (record.start_time < section.window_end and record.end_time > section.window_start):
+            return "record_outside_window"
+        if record.data_type in {"sleep", "exercise"}:
+            expected = health_delta_seconds(record.start_time, record.end_time)
+            if abs(record.value - expected) > Decimal("0.01"):
+                return "duration_mismatch"
+    if record.detail_type is not None and not 0 <= record.detail_type <= 100000:
+        return "invalid_detail_type"
+    for segment in record.segments:
+        if not health_aware(segment.start_time) or not health_aware(segment.end_time):
+            return "timezone_required"
+        if not record.start_time <= segment.start_time < segment.end_time <= record.end_time:
+            return "invalid_segment_interval"
+        if not 0 <= segment.segment_type <= 1000:
+            return "invalid_segment_type"
+    return None
+
+
+def health_local_day(record: HealthSyncRecordInput) -> date:
+    use_end = record.data_type == "sleep"
+    instant = record.end_time if use_end else record.start_time
+    offset = record.end_offset_seconds if use_end else record.start_offset_seconds
+    assert instant is not None
+    assert record.zone_id is not None
+    if offset is not None:
+        return (instant.astimezone(UTC) + timedelta(seconds=offset)).date()
+    return instant.astimezone(ZoneInfo(record.zone_id)).date()
+
+
+def health_content_hash(record: HealthSyncRecordInput) -> str:
+    content = {
+        "data_type": record.data_type,
+        "external_record_id": record.external_record_id,
+        "origin_package": record.origin_package,
+        "start_time": iso(record.start_time) if record.start_time else None,
+        "end_time": iso(record.end_time) if record.end_time else None,
+        "zone_id": record.zone_id,
+        "start_offset_seconds": record.start_offset_seconds,
+        "end_offset_seconds": record.end_offset_seconds,
+        "value": str(record.value),
+        "unit": record.unit,
+        "last_modified_time": iso(record.last_modified_time),
+        "detail_type": record.detail_type,
+        "segments": sorted(
+            (
+                iso(segment.start_time),
+                iso(segment.end_time),
+                segment.segment_type,
+            )
+            for segment in record.segments
+        ),
+    }
+    return digest(json.dumps(content, sort_keys=True, separators=(",", ":")))
+
+
+def health_row_interval(row: sqlite3.Row) -> tuple[datetime, datetime]:
+    return datetime.fromisoformat(row["start_time"]), datetime.fromisoformat(row["end_time"])
+
+
+def health_has_overlap(rows: list[sqlite3.Row]) -> bool:
+    latest_end: datetime | None = None
+    for row in sorted(rows, key=lambda item: item["start_time"]):
+        start, end = health_row_interval(row)
+        if latest_end is not None and start < latest_end:
+            return True
+        if latest_end is None or end > latest_end:
+            latest_end = end
+    return False
+
+
+def health_union_duration(rows: list[sqlite3.Row]) -> Decimal:
+    total = Decimal(0)
+    current_start: datetime | None = None
+    current_end: datetime | None = None
+    for row in sorted(rows, key=lambda item: item["start_time"]):
+        start, end = health_row_interval(row)
+        if current_start is None:
+            current_start, current_end = start, end
+        elif current_end is not None and start <= current_end:
+            if end > current_end:
+                current_end = end
+        else:
+            assert current_end is not None
+            total += health_delta_seconds(current_start, current_end)
+            current_start, current_end = start, end
+    if current_start is not None and current_end is not None:
+        total += health_delta_seconds(current_start, current_end)
+    return total
+
+
+def health_cross_source_overlap(rows: list[sqlite3.Row]) -> bool:
+    ordered = sorted(rows, key=lambda item: item["start_time"])
+    for index, row in enumerate(ordered):
+        _, end = health_row_interval(row)
+        for other in ordered[index + 1 :]:
+            start, _ = health_row_interval(other)
+            if start >= end:
+                break
+            if row["origin_package"] != other["origin_package"]:
+                return True
+    return False
+
+
+def health_source_value(data_type: str, rows: list[sqlite3.Row]) -> Decimal | None:
+    if data_type == "weight":
+        return None
+    if data_type in {"sleep", "exercise"}:
+        return health_union_duration(rows)
+    if health_has_overlap(rows):
+        return None
+    return sum((Decimal(row["value"]) for row in rows), Decimal(0))
+
+
+def rebuild_health_aggregate(
+    connection: sqlite3.Connection,
+    user_id: str,
+    data_type: str,
+    local_day: date,
+) -> None:
+    existing = connection.execute(
+        "SELECT id FROM health_daily_aggregates WHERE user_id=? AND data_type=? AND local_day=?",
+        (user_id, data_type, str(local_day)),
+    ).fetchone()
+    if existing:
+        connection.execute("DELETE FROM health_daily_aggregates WHERE id=?", (existing["id"],))
+    rows = connection.execute(
+        """SELECT * FROM health_records
+           WHERE user_id=? AND data_type=? AND local_day=? AND tombstoned_at IS NULL
+           ORDER BY origin_package,start_time,end_time,external_record_id""",
+        (user_id, data_type, str(local_day)),
+    ).fetchall()
+    if not rows:
+        return
+    grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        grouped[row["origin_package"]].append(row)
+    source_values = {
+        origin: health_source_value(data_type, source_rows)
+        for origin, source_rows in grouped.items()
+    }
+    preference = connection.execute(
+        """SELECT origin_package FROM health_source_preferences
+           WHERE user_id=? AND data_type=?""",
+        (user_id, data_type),
+    ).fetchone()
+    preferred = preference["origin_package"] if preference else None
+    selected_origin: str | None = None
+    selected_sources: set[str] = set()
+    value: Decimal | None = None
+    if data_type == "weight":
+        status = "series"
+        if preferred in grouped:
+            selected_origin = preferred
+            selected_sources = {preferred}
+    elif preferred in grouped:
+        selected_origin = preferred
+        selected_sources = {preferred}
+        value = source_values[preferred]
+        status = "ready" if value is not None else "conflict"
+    elif len(grouped) == 1:
+        selected_origin = next(iter(grouped))
+        selected_sources = {selected_origin}
+        value = source_values[selected_origin]
+        status = "ready" if value is not None else "conflict"
+    elif health_cross_source_overlap(rows) or any(
+        source_value is None for source_value in source_values.values()
+    ):
+        status = "conflict"
+    else:
+        status = "ready"
+        selected_sources = set(grouped)
+        if data_type in {"sleep", "exercise"}:
+            value = health_union_duration(rows)
+        else:
+            value = sum(
+                (
+                    source_value
+                    for source_value in source_values.values()
+                    if source_value is not None
+                ),
+                Decimal(0),
+            )
+    aggregate_id = uid()
+    connection.execute(
+        """INSERT INTO health_daily_aggregates
+           (id,user_id,data_type,local_day,status,value,unit,selected_origin_package,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            aggregate_id,
+            user_id,
+            data_type,
+            str(local_day),
+            status,
+            health_decimal(value) if value is not None else None,
+            HEALTH_UNITS[data_type],
+            selected_origin,
+            iso(now()),
+        ),
+    )
+    for origin, source_rows in grouped.items():
+        source_value = source_values[origin]
+        connection.execute(
+            """INSERT INTO health_daily_aggregate_sources
+               (aggregate_id,origin_package,record_count,value,overlap_detected,selected)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                aggregate_id,
+                origin,
+                len(source_rows),
+                health_decimal(source_value) if source_value is not None else None,
+                int(health_has_overlap(source_rows)),
+                int(origin in selected_sources),
+            ),
+        )
+
+
+def rebuild_health_type(connection: sqlite3.Connection, user_id: str, data_type: str) -> None:
+    days = {
+        date.fromisoformat(row["local_day"])
+        for row in connection.execute(
+            """SELECT local_day FROM health_records
+               WHERE user_id=? AND data_type=? AND tombstoned_at IS NULL
+               UNION SELECT local_day FROM health_daily_aggregates
+               WHERE user_id=? AND data_type=?""",
+            (user_id, data_type, user_id, data_type),
+        )
+    }
+    for local_day in sorted(days):
+        rebuild_health_aggregate(connection, user_id, data_type, local_day)
+
+
+def health_element_result(
+    record: HealthSyncRecordInput,
+    status: Literal["created", "unchanged", "updated", "deleted", "conflict", "rejected"],
+    code: str | None = None,
+) -> HealthSyncElementResult:
+    return HealthSyncElementResult(
+        data_type=record.data_type,
+        external_record_id=record.external_record_id,
+        origin_package=record.origin_package,
+        status=status,
+        code=code,
+    )
+
+
+def mark_health_sighting(
+    connection: sqlite3.Connection,
+    user_id: str,
+    record_id: str,
+    installation_id: str,
+    stamp: str,
+) -> None:
+    connection.execute(
+        """INSERT INTO health_record_sightings
+           (record_id,user_id,installation_id,active,last_seen_at,removed_at)
+           VALUES (?,?,?,1,?,NULL)
+           ON CONFLICT(record_id,installation_id) DO UPDATE SET
+           active=1,last_seen_at=excluded.last_seen_at,removed_at=NULL""",
+        (record_id, user_id, installation_id, stamp),
+    )
+
+
+def replace_health_segments(
+    connection: sqlite3.Connection,
+    record_id: str,
+    segments: list[HealthSegmentInput],
+) -> None:
+    connection.execute("DELETE FROM health_record_segments WHERE record_id=?", (record_id,))
+    for segment in sorted(
+        segments, key=lambda item: (item.start_time, item.end_time, item.segment_type)
+    ):
+        connection.execute(
+            """INSERT INTO health_record_segments
+               (id,record_id,start_time,end_time,segment_type) VALUES (?,?,?,?,?)""",
+            (
+                uid(),
+                record_id,
+                iso(segment.start_time),
+                iso(segment.end_time),
+                segment.segment_type,
+            ),
+        )
+
+
+def process_health_upsert(
+    connection: sqlite3.Connection,
+    user_id: str,
+    installation_id: str,
+    record: HealthSyncRecordInput,
+    affected: set[tuple[str, date]],
+) -> tuple[HealthSyncElementResult, str]:
+    assert record.start_time is not None
+    assert record.end_time is not None
+    assert record.zone_id is not None
+    assert record.value is not None
+    assert record.unit is not None
+    incoming_modified = record.last_modified_time.astimezone(UTC)
+    content_hash = health_content_hash(record)
+    local_day = health_local_day(record)
+    stamp = iso(now())
+    existing = connection.execute(
+        """SELECT * FROM health_records
+           WHERE user_id=? AND data_type=? AND origin_package=? AND external_record_id=?""",
+        (user_id, record.data_type, record.origin_package, record.external_record_id),
+    ).fetchone()
+    if existing:
+        record_id = existing["id"]
+        stored_modified = datetime.fromisoformat(existing["last_modified_time"])
+        tombstone_modified = (
+            datetime.fromisoformat(existing["tombstone_modified_time"])
+            if existing["tombstone_modified_time"]
+            else None
+        )
+        if tombstone_modified is not None and incoming_modified <= tombstone_modified:
+            return health_element_result(record, "conflict", "newer_tombstone"), record_id
+        if incoming_modified < stored_modified:
+            if existing["tombstoned_at"] is None:
+                mark_health_sighting(connection, user_id, record_id, installation_id, stamp)
+            return health_element_result(record, "conflict", "stale_record"), record_id
+        if incoming_modified == stored_modified and content_hash != existing["content_hash"]:
+            if existing["tombstoned_at"] is None:
+                mark_health_sighting(connection, user_id, record_id, installation_id, stamp)
+            return health_element_result(record, "conflict", "same_version_conflict"), record_id
+        if incoming_modified == stored_modified and existing["tombstoned_at"] is None:
+            connection.execute(
+                """UPDATE health_records
+                   SET origin_app_name=COALESCE(?,origin_app_name),updated_at=?
+                   WHERE id=?""",
+                (record.origin_app_name, stamp, record_id),
+            )
+            mark_health_sighting(connection, user_id, record_id, installation_id, stamp)
+            return health_element_result(record, "unchanged"), record_id
+        affected.add((record.data_type, date.fromisoformat(existing["local_day"])))
+        connection.execute(
+            """UPDATE health_records SET origin_app_name=?,start_time=?,end_time=?,zone_id=?,
+               start_offset_seconds=?,end_offset_seconds=?,local_day=?,value=?,unit=?,
+               last_modified_time=?,detail_type=?,content_hash=?,updated_at=?,tombstoned_at=NULL,
+               tombstone_modified_time=NULL WHERE id=?""",
+            (
+                record.origin_app_name,
+                iso(record.start_time),
+                iso(record.end_time),
+                record.zone_id,
+                record.start_offset_seconds,
+                record.end_offset_seconds,
+                str(local_day),
+                health_decimal(record.value),
+                record.unit,
+                iso(record.last_modified_time),
+                record.detail_type,
+                content_hash,
+                stamp,
+                record_id,
+            ),
+        )
+        replace_health_segments(connection, record_id, record.segments)
+        mark_health_sighting(connection, user_id, record_id, installation_id, stamp)
+        affected.add((record.data_type, local_day))
+        return health_element_result(record, "updated"), record_id
+    record_id = uid()
+    connection.execute(
+        """INSERT INTO health_records
+           (id,user_id,data_type,origin_package,origin_app_name,external_record_id,
+            start_time,end_time,zone_id,start_offset_seconds,end_offset_seconds,local_day,
+            value,unit,last_modified_time,detail_type,content_hash,imported_at,updated_at,
+            tombstoned_at,tombstone_modified_time)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            record_id,
+            user_id,
+            record.data_type,
+            record.origin_package,
+            record.origin_app_name,
+            record.external_record_id,
+            iso(record.start_time),
+            iso(record.end_time),
+            record.zone_id,
+            record.start_offset_seconds,
+            record.end_offset_seconds,
+            str(local_day),
+            health_decimal(record.value),
+            record.unit,
+            iso(record.last_modified_time),
+            record.detail_type,
+            content_hash,
+            stamp,
+            stamp,
+            None,
+            None,
+        ),
+    )
+    replace_health_segments(connection, record_id, record.segments)
+    mark_health_sighting(connection, user_id, record_id, installation_id, stamp)
+    affected.add((record.data_type, local_day))
+    return health_element_result(record, "created"), record_id
+
+
+def process_health_delete(
+    connection: sqlite3.Connection,
+    user_id: str,
+    installation_id: str,
+    record: HealthSyncRecordInput,
+    affected: set[tuple[str, date]],
+) -> tuple[HealthSyncElementResult, str | None]:
+    existing = connection.execute(
+        """SELECT * FROM health_records
+           WHERE user_id=? AND data_type=? AND origin_package=? AND external_record_id=?""",
+        (user_id, record.data_type, record.origin_package, record.external_record_id),
+    ).fetchone()
+    if not existing:
+        return health_element_result(record, "unchanged"), None
+    stored_modified = datetime.fromisoformat(existing["last_modified_time"])
+    tombstone_modified = (
+        datetime.fromisoformat(existing["tombstone_modified_time"])
+        if existing["tombstone_modified_time"]
+        else None
+    )
+    effective_modified = max(
+        value for value in (stored_modified, tombstone_modified) if value is not None
+    )
+    if record.last_modified_time.astimezone(UTC) < effective_modified:
+        return health_element_result(record, "conflict", "stale_tombstone"), existing["id"]
+    sighting = connection.execute(
+        """SELECT active FROM health_record_sightings
+           WHERE record_id=? AND installation_id=?""",
+        (existing["id"], installation_id),
+    ).fetchone()
+    stamp = iso(now())
+    connection.execute(
+        """UPDATE health_record_sightings SET active=0,removed_at=?,last_seen_at=?
+           WHERE record_id=? AND installation_id=?""",
+        (stamp, stamp, existing["id"], installation_id),
+    )
+    active = connection.execute(
+        "SELECT 1 FROM health_record_sightings WHERE record_id=? AND active=1 LIMIT 1",
+        (existing["id"],),
+    ).fetchone()
+    changed = bool(sighting and sighting["active"])
+    connection.execute(
+        """UPDATE health_records SET tombstone_modified_time=?,updated_at=?
+           WHERE id=?""",
+        (iso(record.last_modified_time), stamp, existing["id"]),
+    )
+    if not active:
+        connection.execute(
+            """UPDATE health_records SET tombstoned_at=?,updated_at=?
+               WHERE id=?""",
+            (stamp, stamp, existing["id"]),
+        )
+        affected.add((record.data_type, date.fromisoformat(existing["local_day"])))
+        changed = changed or existing["tombstoned_at"] is None
+    return health_element_result(record, "deleted" if changed else "unchanged"), existing["id"]
+
+
+def process_health_record(
+    connection: sqlite3.Connection,
+    user_id: str,
+    installation_id: str,
+    section: HealthSyncSectionInput,
+    record: HealthSyncRecordInput,
+    affected: set[tuple[str, date]],
+) -> tuple[HealthSyncElementResult, str | None]:
+    error = health_record_error(record, section)
+    if error:
+        return health_element_result(record, "rejected", error), None
+    if record.operation == "delete":
+        return process_health_delete(
+            connection,
+            user_id,
+            installation_id,
+            record,
+            affected,
+        )
+    return process_health_upsert(
+        connection,
+        user_id,
+        installation_id,
+        record,
+        affected,
+    )
+
+
+def health_record_in_window(row: sqlite3.Row, start: datetime, end: datetime) -> bool:
+    record_start, record_end = health_row_interval(row)
+    if row["data_type"] == "weight":
+        return start <= record_start < end
+    return record_start < end and record_end > start
+
+
+def reconcile_health_section(
+    connection: sqlite3.Connection,
+    user_id: str,
+    installation_id: str,
+    section: HealthSyncSectionInput,
+    seen_record_ids: set[str],
+    affected: set[tuple[str, date]],
+) -> int:
+    rows = connection.execute(
+        """SELECT r.* FROM health_record_sightings s
+           JOIN health_records r ON r.id=s.record_id
+           WHERE s.user_id=? AND s.installation_id=? AND s.active=1 AND r.data_type=?""",
+        (user_id, installation_id, section.data_type),
+    ).fetchall()
+    stamp = iso(now())
+    reconciled = 0
+    for row in rows:
+        if row["id"] in seen_record_ids or not health_record_in_window(
+            row, section.window_start, section.window_end
+        ):
+            continue
+        connection.execute(
+            """UPDATE health_record_sightings SET active=0,removed_at=?,last_seen_at=?
+               WHERE record_id=? AND installation_id=?""",
+            (stamp, stamp, row["id"], installation_id),
+        )
+        active = connection.execute(
+            "SELECT 1 FROM health_record_sightings WHERE record_id=? AND active=1 LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if not active and row["tombstoned_at"] is None:
+            connection.execute(
+                """UPDATE health_records SET tombstoned_at=?,updated_at=? WHERE id=?""",
+                (stamp, stamp, row["id"]),
+            )
+            affected.add((row["data_type"], date.fromisoformat(row["local_day"])))
+            reconciled += 1
+    return reconciled
+
+
+def health_batch_hash(payload: HealthSyncBatchInput) -> str:
+    canonical = json.dumps(
+        payload.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return digest(canonical)
+
+
+def health_record_output(connection: sqlite3.Connection, row: sqlite3.Row) -> HealthRecordOutput:
+    segments = connection.execute(
+        """SELECT start_time,end_time,segment_type FROM health_record_segments
+           WHERE record_id=? ORDER BY start_time,end_time,segment_type""",
+        (row["id"],),
+    ).fetchall()
+    return HealthRecordOutput(
+        data_type=row["data_type"],
+        external_record_id=row["external_record_id"],
+        origin_package=row["origin_package"],
+        origin_app_name=row["origin_app_name"],
+        start_time=datetime.fromisoformat(row["start_time"]),
+        end_time=datetime.fromisoformat(row["end_time"]),
+        zone_id=row["zone_id"],
+        start_offset_seconds=row["start_offset_seconds"],
+        end_offset_seconds=row["end_offset_seconds"],
+        local_day=date.fromisoformat(row["local_day"]),
+        value=Decimal(row["value"]),
+        unit=row["unit"],
+        last_modified_time=datetime.fromisoformat(row["last_modified_time"]),
+        detail_type=row["detail_type"],
+        segments=[
+            HealthSegmentOutput(
+                start_time=datetime.fromisoformat(segment["start_time"]),
+                end_time=datetime.fromisoformat(segment["end_time"]),
+                segment_type=segment["segment_type"],
+            )
+            for segment in segments
+        ],
+    )
+
+
+def health_aggregate_output(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> HealthAggregateOutput:
+    sources = connection.execute(
+        """SELECT * FROM health_daily_aggregate_sources
+           WHERE aggregate_id=? ORDER BY origin_package""",
+        (row["id"],),
+    ).fetchall()
+    return HealthAggregateOutput(
+        data_type=row["data_type"],
+        local_day=date.fromisoformat(row["local_day"]),
+        status=row["status"],
+        value=Decimal(row["value"]) if row["value"] is not None else None,
+        unit=row["unit"],
+        selected_origin_package=row["selected_origin_package"],
+        sources=[
+            HealthAggregateSourceOutput(
+                origin_package=source["origin_package"],
+                record_count=source["record_count"],
+                value=Decimal(source["value"]) if source["value"] is not None else None,
+                overlap_detected=bool(source["overlap_detected"]),
+                selected=bool(source["selected"]),
+            )
+            for source in sources
+        ],
+    )
+
+
 app = FastAPI(title="Baseline Nutrition API", version="1.0.0")
 
 
@@ -2150,6 +2993,284 @@ def get_profile(user: Annotated[UserContext, Depends(current_user)]):
     if not profile or not profile["target_kcal"]:
         fail(404, "not_found", "Profil nicht gefunden.")
     return dict(profile)
+
+
+@app.post("/v1/health/batches", response_model=HealthSyncBatchResponse)
+def sync_health_batch(
+    payload: HealthSyncBatchInput,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    total_records = sum(len(section.records) for section in payload.sections)
+    if total_records > HEALTH_MAX_BATCH_RECORDS:
+        fail(422, "batch_too_large", "Der Health-Connect-Batch ist zu groß.")
+    health_sync_limit.check(f"health-sync:{user.id}")
+    request_hash = health_batch_hash(payload)
+    status_counts: dict[str, int] = defaultdict(int)
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
+        repeated = connection.execute(
+            """SELECT request_hash,response_json FROM health_sync_batches
+               WHERE user_id=? AND request_id=?""",
+            (user.id, payload.request_id),
+        ).fetchone()
+        if repeated:
+            if repeated["request_hash"] != request_hash:
+                connection.rollback()
+                fail(
+                    409,
+                    "idempotency_conflict",
+                    "Die Health-Request-ID wurde bereits anders verwendet.",
+                )
+            connection.commit()
+            return HealthSyncBatchResponse.model_validate_json(repeated["response_json"])
+        affected: set[tuple[str, date]] = set()
+        section_results: list[HealthSyncSectionResult] = []
+        for section_index, section in enumerate(payload.sections):
+            section_error = health_section_error(section)
+            results: list[HealthSyncElementResult] = []
+            seen_record_ids: set[str] = set()
+            if section_error:
+                results = [
+                    health_element_result(record, "rejected", section_error)
+                    for record in section.records
+                ]
+            else:
+                for record_index, record in enumerate(section.records):
+                    savepoint = f"health_{section_index}_{record_index}"
+                    connection.execute(f"SAVEPOINT {savepoint}")
+                    item_affected: set[tuple[str, date]] = set()
+                    try:
+                        result, record_id = process_health_record(
+                            connection,
+                            user.id,
+                            payload.installation_id,
+                            section,
+                            record,
+                            item_affected,
+                        )
+                        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                        affected.update(item_affected)
+                    except (sqlite3.IntegrityError, ValueError, ArithmeticError):
+                        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                        result = health_element_result(record, "rejected", "invalid_record")
+                        record_id = None
+                    results.append(result)
+                    if record.operation == "upsert" and record_id and result.status != "rejected":
+                        seen_record_ids.add(record_id)
+            for result in results:
+                status_counts[result.status] += 1
+            rejected = section_error is not None or any(
+                result.status == "rejected" for result in results
+            )
+            cursor_committed = section.complete and not rejected
+            reconciled = 0
+            if cursor_committed:
+                reconciled = reconcile_health_section(
+                    connection,
+                    user.id,
+                    payload.installation_id,
+                    section,
+                    seen_record_ids,
+                    affected,
+                )
+                stamp = iso(now())
+                connection.execute(
+                    """INSERT INTO health_sync_cursors
+                       (user_id,installation_id,data_type,cursor,window_end,updated_at)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(user_id,installation_id,data_type) DO UPDATE SET
+                       cursor=excluded.cursor,window_end=excluded.window_end,
+                       updated_at=excluded.updated_at""",
+                    (
+                        user.id,
+                        payload.installation_id,
+                        section.data_type,
+                        section.cursor,
+                        iso(section.window_end),
+                        stamp,
+                    ),
+                )
+            section_results.append(
+                HealthSyncSectionResult(
+                    data_type=section.data_type,
+                    cursor_committed=cursor_committed,
+                    reconciled_deletions=reconciled,
+                    results=results,
+                )
+            )
+        for data_type, local_day in sorted(affected, key=lambda item: (item[0], item[1])):
+            rebuild_health_aggregate(connection, user.id, data_type, local_day)
+        response = HealthSyncBatchResponse(
+            request_id=payload.request_id,
+            sections=section_results,
+        )
+        connection.execute(
+            """INSERT INTO health_sync_batches
+               (id,user_id,request_id,request_hash,response_json,created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                uid(),
+                user.id,
+                payload.request_id,
+                request_hash,
+                response.model_dump_json(),
+                iso(now()),
+            ),
+        )
+        connection.commit()
+    logger.info(
+        "health_sync user=%s request=%s records=%d statuses=%s",
+        digest(user.id)[:12],
+        digest(payload.request_id)[:12],
+        total_records,
+        dict(sorted(status_counts.items())),
+    )
+    return response
+
+
+@app.get("/v1/health/records", response_model=list[HealthRecordOutput])
+def list_health_records(
+    data_type: str,
+    start: date,
+    end: date,
+    user: Annotated[UserContext, Depends(current_user)],
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    if data_type not in HEALTH_TYPES:
+        fail(422, "unsupported_data_type", "Unbekannter Health-Connect-Datentyp.")
+    if start > end or end - start > timedelta(days=30):
+        fail(422, "invalid_window", "Ungültiges Abfragefenster.")
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT * FROM health_records
+               WHERE user_id=? AND data_type=? AND local_day BETWEEN ? AND ?
+               AND tombstoned_at IS NULL
+               ORDER BY start_time,origin_package,external_record_id LIMIT ? OFFSET ?""",
+            (user.id, data_type, str(start), str(end), limit, offset),
+        ).fetchall()
+        return [health_record_output(connection, row) for row in rows]
+
+
+@app.get("/v1/health/aggregates", response_model=list[HealthAggregateOutput])
+def list_health_aggregates(
+    start: date,
+    end: date,
+    user: Annotated[UserContext, Depends(current_user)],
+    data_type: str | None = None,
+):
+    if data_type is not None and data_type not in HEALTH_TYPES:
+        fail(422, "unsupported_data_type", "Unbekannter Health-Connect-Datentyp.")
+    if start > end or end - start > timedelta(days=30):
+        fail(422, "invalid_window", "Ungültiges Abfragefenster.")
+    type_clause = " AND data_type=?" if data_type else ""
+    parameters: tuple[object, ...] = (user.id, str(start), str(end))
+    if data_type:
+        parameters += (data_type,)
+    with db() as connection:
+        rows = connection.execute(
+            f"""SELECT * FROM health_daily_aggregates
+                WHERE user_id=? AND local_day BETWEEN ? AND ?{type_clause}
+                ORDER BY local_day,data_type""",
+            parameters,
+        ).fetchall()
+        return [health_aggregate_output(connection, row) for row in rows]
+
+
+@app.get("/v1/health/state", response_model=HealthSyncStateOutput)
+def health_sync_state(user: Annotated[UserContext, Depends(current_user)]):
+    with db() as connection:
+        cursors = connection.execute(
+            """SELECT * FROM health_sync_cursors
+               WHERE user_id=? ORDER BY installation_id,data_type""",
+            (user.id,),
+        ).fetchall()
+        preferences = connection.execute(
+            """SELECT * FROM health_source_preferences
+               WHERE user_id=? ORDER BY data_type""",
+            (user.id,),
+        ).fetchall()
+    return HealthSyncStateOutput(
+        cursors=[
+            HealthSyncCursorOutput(
+                installation_id=row["installation_id"],
+                data_type=row["data_type"],
+                cursor=row["cursor"],
+                window_end=datetime.fromisoformat(row["window_end"]),
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in cursors
+        ],
+        source_preferences=[
+            HealthSourcePreferenceOutput(
+                data_type=row["data_type"],
+                origin_package=row["origin_package"],
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in preferences
+        ],
+    )
+
+
+@app.put(
+    "/v1/health/source-preferences/{data_type}",
+    response_model=HealthSourcePreferenceOutput,
+)
+def save_health_source_preference(
+    data_type: str,
+    payload: HealthSourcePreferenceInput,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    if data_type not in HEALTH_TYPES:
+        fail(422, "unsupported_data_type", "Unbekannter Health-Connect-Datentyp.")
+    if not HEALTH_ORIGIN_PATTERN.fullmatch(payload.origin_package):
+        fail(422, "invalid_origin_package", "Ungültiges Ursprungspaket.")
+    stamp = iso(now())
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
+        known = connection.execute(
+            """SELECT 1 FROM health_records
+               WHERE user_id=? AND data_type=? AND origin_package=? LIMIT 1""",
+            (user.id, data_type, payload.origin_package),
+        ).fetchone()
+        if not known:
+            connection.rollback()
+            fail(404, "unknown_source", "Die Quelle ist für diesen Datentyp nicht bekannt.")
+        connection.execute(
+            """INSERT INTO health_source_preferences
+               (user_id,data_type,origin_package,updated_at) VALUES (?,?,?,?)
+               ON CONFLICT(user_id,data_type) DO UPDATE SET
+               origin_package=excluded.origin_package,updated_at=excluded.updated_at""",
+            (user.id, data_type, payload.origin_package, stamp),
+        )
+        rebuild_health_type(connection, user.id, data_type)
+        connection.commit()
+    return HealthSourcePreferenceOutput(
+        data_type=data_type,
+        origin_package=payload.origin_package,
+        updated_at=datetime.fromisoformat(stamp),
+    )
+
+
+@app.delete("/v1/health/source-preferences/{data_type}", status_code=204)
+def delete_health_source_preference(
+    data_type: str,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    if data_type not in HEALTH_TYPES:
+        fail(422, "unsupported_data_type", "Unbekannter Health-Connect-Datentyp.")
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
+        connection.execute(
+            "DELETE FROM health_source_preferences WHERE user_id=? AND data_type=?",
+            (user.id, data_type),
+        )
+        rebuild_health_type(connection, user.id, data_type)
+        connection.commit()
 
 
 @app.post("/v1/uploads", response_model=UploadInfo, status_code=201)
