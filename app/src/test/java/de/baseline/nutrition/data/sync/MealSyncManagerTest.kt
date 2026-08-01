@@ -185,6 +185,25 @@ class MealSyncManagerTest {
         assertTrue(manager.uiState().operations.isEmpty())
     }
 
+    @Test
+    fun cacheReloadKeepsPendingOfflineActions() = runTest {
+        val store = InMemoryQueueStore()
+        val manager = manager(store, FakeRemote(), FakeScheduler(), FakeClock(31_000))
+        val local = manager.enqueueSave(payload("pending-cache-reload"), null)
+        manager.cacheRemoteMeals(
+            "2026-07-31",
+            listOf(payload("server-cache").asMealDto("server-cache", version = 1, updatedAt = 1_000)),
+        )
+
+        manager.clearCaches()
+
+        val snapshot = store.read("user-a")
+        assertTrue(snapshot.cachedMeals.isEmpty())
+        assertTrue(snapshot.cachedDays.isEmpty())
+        assertEquals(1, snapshot.operations.count { it.status != MealOperationStatus.Synced })
+        assertEquals(local.id, manager.cachedMeals("2026-07-31").meals.single().id)
+    }
+
     private fun manager(
         store: MealQueueStore,
         remote: FakeRemote,

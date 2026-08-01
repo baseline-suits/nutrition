@@ -72,6 +72,8 @@ fun NutritionNavHost(
                 container.captureRepository,
                 container.productRepository,
                 container.healthRepository,
+                container.settingsRepository,
+                container.settingsLocalDataSource,
                 container.dispatchers.io,
                 onSessionChanged,
             )

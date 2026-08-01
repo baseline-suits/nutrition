@@ -538,6 +538,13 @@ class DiaryRepository(
         historyCache.keys.removeAll { it.startsWith("$userId:") }
     }
 
+    suspend fun reloadCaches() {
+        mealSyncManager?.clearCaches()
+        sessionStore?.readUserId()?.let { userId ->
+            historyCache.keys.removeAll { it.startsWith("$userId:") }
+        }
+    }
+
     override suspend fun history(days: Int): HistoryLoad {
         require(days in 1..100)
         val userId = sessionStore?.readUserId()

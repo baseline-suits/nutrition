@@ -1555,6 +1555,46 @@
         "title": "IngredientOutput",
         "type": "object"
       },
+      "LocaleSettingInput": {
+        "properties": {
+          "locale": {
+            "enum": [
+              "de",
+              "ru"
+            ],
+            "title": "Locale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "locale"
+        ],
+        "title": "LocaleSettingInput",
+        "type": "object"
+      },
+      "LocaleSettingOutput": {
+        "properties": {
+          "locale": {
+            "enum": [
+              "de",
+              "ru"
+            ],
+            "title": "Locale",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "locale",
+          "updated_at"
+        ],
+        "title": "LocaleSettingOutput",
+        "type": "object"
+      },
       "MealInput-Input": {
         "properties": {
           "attachment_id": {
@@ -2946,6 +2986,18 @@
             ],
             "title": "Calorie Budget Mode",
             "type": "string"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
           },
           "goal_direction": {
             "anyOf": [
@@ -5726,6 +5778,62 @@
           }
         },
         "summary": "Recent Meals"
+      }
+    },
+    "/v1/settings/locale": {
+      "put": {
+        "operationId": "save_locale_setting_v1_settings_locale_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocaleSettingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocaleSettingOutput"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Locale Setting"
       }
     },
     "/v1/uploads": {

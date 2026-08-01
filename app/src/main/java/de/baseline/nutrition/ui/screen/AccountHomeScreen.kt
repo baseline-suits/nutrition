@@ -8,9 +8,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.viewmodel.compose.viewModel
+import de.baseline.nutrition.BuildConfig
 import de.baseline.nutrition.data.capture.CaptureRepository
 import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.product.ProductRepository
+import de.baseline.nutrition.data.settings.SettingsDataSource
+import de.baseline.nutrition.data.settings.SettingsLocalDataSource
 import de.baseline.nutrition.domain.auth.AuthRepository
 import de.baseline.nutrition.domain.health.HealthRepository
 import de.baseline.nutrition.domain.health.HealthDataType
@@ -23,11 +26,15 @@ import de.baseline.nutrition.ui.history.HistoryScreen
 import de.baseline.nutrition.ui.history.HistoryViewModel
 import de.baseline.nutrition.ui.health.HealthConnectScreen
 import de.baseline.nutrition.ui.health.HealthConnectViewModel
+import de.baseline.nutrition.ui.LocaleController
 import de.baseline.nutrition.ui.capture.CaptureScreen
 import de.baseline.nutrition.ui.capture.CaptureViewModel
 import de.baseline.nutrition.ui.reuse.ReuseMode
 import de.baseline.nutrition.ui.reuse.ReuseScreen
 import de.baseline.nutrition.ui.reuse.ReuseViewModel
+import de.baseline.nutrition.ui.settings.SettingsAppDetails
+import de.baseline.nutrition.ui.settings.SettingsScreen
+import de.baseline.nutrition.ui.settings.SettingsViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 
 @Composable
@@ -37,6 +44,8 @@ fun AccountHomeScreen(
     captureRepository: CaptureRepository,
     productRepository: ProductRepository,
     healthRepository: HealthRepository,
+    settingsRepository: SettingsDataSource,
+    settingsLocalDataSource: SettingsLocalDataSource,
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
 ) {
@@ -56,6 +65,21 @@ fun AccountHomeScreen(
     )
     val healthViewModel: HealthConnectViewModel = viewModel(
         factory = HealthConnectViewModel.factory(healthRepository, ioDispatcher),
+    )
+    val settingsViewModel: SettingsViewModel = viewModel(
+        factory = SettingsViewModel.factory(
+            remote = settingsRepository,
+            local = settingsLocalDataSource,
+            healthRepository = healthRepository,
+            authRepository = authRepository,
+            ioDispatcher = ioDispatcher,
+            applyLocale = LocaleController::apply,
+            appDetails = SettingsAppDetails(
+                versionName = BuildConfig.VERSION_NAME,
+                versionCode = BuildConfig.VERSION_CODE,
+                environment = BuildConfig.ENVIRONMENT,
+            ),
+        ),
     )
     val healthState by healthViewModel.state.collectAsState()
     LaunchedEffect(diaryState.error, diaryState.sync.overview.authRequired) {
@@ -146,16 +170,28 @@ fun AccountHomeScreen(
         )
         "health" -> HealthConnectScreen(
             viewModel = healthViewModel,
-            onClose = { activeFlow = "diary" },
+            onClose = {
+                settingsViewModel.refresh()
+                activeFlow = "settings"
+            },
+        )
+        "settings" -> SettingsScreen(
+            viewModel = settingsViewModel,
+            onOpenHealth = { activeFlow = "health" },
+            onClose = {
+                diaryViewModel.refresh()
+                activeFlow = "diary"
+            },
+            onLoggedOut = onLoggedOut,
         )
         else -> DiaryScreen(
-            diaryViewModel,
-            authRepository,
-            ioDispatcher,
-            onLoggedOut,
+            viewModel = diaryViewModel,
             onQuickAdd = { activeFlow = "capture" },
             onHistory = { activeFlow = "history" },
-            onHealthConnect = { activeFlow = "health" },
+            onSettings = {
+                settingsViewModel.refresh()
+                activeFlow = "settings"
+            },
             healthConnectionLoading = healthState.loading,
             healthAvailability = healthState.availability,
             activeCaloriesPermission = healthState.permissions[HealthDataType.ActiveCalories],

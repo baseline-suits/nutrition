@@ -958,6 +958,7 @@ class ProfileInput(BaseModel):
     manual: bool
     calculation: dict | None = None
     calorie_budget_mode: Literal["fixed", "dynamic"] = "fixed"
+    expected_updated_at: datetime | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -968,9 +969,25 @@ class ProfileInput(BaseModel):
             raise ValueError("Unbekannte Zeitzone") from error
         return value
 
+    @field_validator("expected_updated_at")
+    @classmethod
+    def expected_update_is_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and not health_aware(value):
+            raise ValueError("expected_updated_at benötigt eine Zeitzone")
+        return value
+
 
 class CalorieBudgetModeInput(BaseModel):
     mode: Literal["fixed", "dynamic"]
+
+
+class LocaleSettingInput(BaseModel):
+    locale: Literal["de", "ru"]
+
+
+class LocaleSettingOutput(BaseModel):
+    locale: Literal["de", "ru"]
+    updated_at: datetime
 
 
 class HealthSegmentInput(BaseModel):
@@ -3177,6 +3194,21 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
         ensure_active_user(connection, user.id)
+        existing_profile = connection.execute(
+            "SELECT updated_at FROM profiles WHERE user_id=?",
+            (user.id,),
+        ).fetchone()
+        if payload.expected_updated_at is not None and (
+            not existing_profile
+            or datetime.fromisoformat(existing_profile["updated_at"])
+            != payload.expected_updated_at.astimezone(UTC)
+        ):
+            connection.rollback()
+            fail(
+                409,
+                "profile_conflict",
+                "Das Profil wurde auf einem anderen Gerät geändert.",
+            )
         connection.execute(
             """INSERT INTO profiles
                (user_id,birth_date,biological_input,height_cm,weight_kg,weight_measured_at,
@@ -3250,6 +3282,26 @@ def get_profile(user: Annotated[UserContext, Depends(current_user)]):
     if not profile or not profile["target_kcal"]:
         fail(404, "not_found", "Profil nicht gefunden.")
     return dict(profile)
+
+
+@app.put("/v1/settings/locale", response_model=LocaleSettingOutput)
+def save_locale_setting(
+    payload: LocaleSettingInput,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    stamp = iso(now())
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
+        connection.execute(
+            "UPDATE users SET locale=? WHERE id=?",
+            (payload.locale, user.id),
+        )
+        connection.commit()
+    return LocaleSettingOutput(
+        locale=payload.locale,
+        updated_at=datetime.fromisoformat(stamp),
+    )
 
 
 @app.put("/v1/calorie-budget/mode", response_model=DailyBudgetSnapshot)

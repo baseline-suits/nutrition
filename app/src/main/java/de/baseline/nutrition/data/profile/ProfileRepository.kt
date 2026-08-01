@@ -21,6 +21,7 @@ data class ProfileRequest(
     val manual: Boolean,
     val calculation: Map<String, String>? = null,
     @SerialName("calorie_budget_mode") val calorieBudgetMode: String = "fixed",
+    @SerialName("expected_updated_at") val expectedUpdatedAt: String? = null,
 )
 
 @Serializable private data class SavedProfile(@SerialName("onboarding_complete") val complete: Boolean)

@@ -30,7 +30,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -44,8 +43,6 @@ import de.baseline.nutrition.R
 import de.baseline.nutrition.data.diary.DailyBudgetDto
 import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.NutrientDto
-import de.baseline.nutrition.data.network.ApiException
-import de.baseline.nutrition.domain.auth.AuthRepository
 import de.baseline.nutrition.domain.auth.AccountDeletionStatus
 import de.baseline.nutrition.domain.diary.IngredientDraft
 import de.baseline.nutrition.domain.diary.MealEditorDraft
@@ -64,19 +61,13 @@ import java.time.LocalDate
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneId
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun DiaryScreen(
     viewModel: DiaryViewModel,
-    authRepository: AuthRepository,
-    ioDispatcher: CoroutineDispatcher,
-    onLoggedOut: () -> Unit,
     onQuickAdd: () -> Unit,
     onHistory: () -> Unit,
-    onHealthConnect: () -> Unit,
+    onSettings: () -> Unit,
     healthConnectionLoading: Boolean,
     healthAvailability: HealthAvailability,
     activeCaloriesPermission: HealthPermissionState?,
@@ -88,12 +79,9 @@ fun DiaryScreen(
         else -> DayScreen(
             state,
             viewModel,
-            authRepository,
-            ioDispatcher,
-            onLoggedOut,
             onQuickAdd,
             onHistory,
-            onHealthConnect,
+            onSettings,
             healthConnectionLoading,
             healthAvailability,
             activeCaloriesPermission,
@@ -105,27 +93,15 @@ fun DiaryScreen(
 private fun DayScreen(
     state: DiaryUiState,
     viewModel: DiaryViewModel,
-    authRepository: AuthRepository,
-    ioDispatcher: CoroutineDispatcher,
-    onLoggedOut: () -> Unit,
     onQuickAdd: () -> Unit,
     onHistory: () -> Unit,
-    onHealthConnect: () -> Unit,
+    onSettings: () -> Unit,
     healthConnectionLoading: Boolean,
     healthAvailability: HealthAvailability,
     activeCaloriesPermission: HealthPermissionState?,
 ) {
-    val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
     var photoDeleteCandidate by remember { mutableStateOf<MealDto?>(null) }
-    var showAccountDeletion by rememberSaveable { mutableStateOf(false) }
-    var accountPassword by remember { mutableStateOf("") }
-    var accountConfirmed by remember { mutableStateOf(false) }
-    var accountDeleting by remember { mutableStateOf(false) }
-    var accountDeletionError by remember { mutableStateOf<String?>(null) }
-    var accountDeletionStatus by remember { mutableStateOf<AccountDeletionStatus?>(null) }
-    val reauthenticationError = stringResource(R.string.account_delete_password_error)
-    val accountDeletionGenericError = stringResource(R.string.account_delete_failed)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -136,12 +112,9 @@ private fun DayScreen(
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(stringResource(R.string.diary_title), fontWeight = FontWeight.Bold)
-            TextButton(onClick = {
-                scope.launch {
-                    withContext(ioDispatcher) { authRepository.logout(false) }
-                    onLoggedOut()
-                }
-            }) { Text(stringResource(R.string.logout_this_device)) }
+            TextButton(onClick = onSettings, modifier = Modifier.testTag("open-settings")) {
+                Text(stringResource(R.string.settings_title))
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
             OutlinedButton(onClick = { viewModel.selectDay(state.selectedDay.minusDays(1)) }) { Text("‹") }
@@ -156,12 +129,6 @@ private fun DayScreen(
             modifier = Modifier.testTag("open-history"),
         ) {
             Text(stringResource(R.string.open_history))
-        }
-        OutlinedButton(
-            onClick = onHealthConnect,
-            modifier = Modifier.testTag("open-health-connect"),
-        ) {
-            Text(stringResource(R.string.health_connect_title))
         }
         SyncOverviewCard(state.sync.overview, viewModel::syncNow)
         if (state.loading && state.meals.isEmpty()) {
@@ -209,26 +176,6 @@ private fun DayScreen(
             OutlinedButton(onClick = viewModel::refresh) { Text(stringResource(R.string.refresh)) }
             state.lastSync?.let { Text(stringResource(R.string.last_sync, it), modifier = Modifier.padding(top = 12.dp)) }
         }
-        Card(modifier = Modifier.fillMaxWidth().testTag("account-deletion-card")) {
-            Column(
-                Modifier.padding(BaselineSpacing.medium),
-                verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
-            ) {
-                Text(stringResource(R.string.account_and_privacy), fontWeight = FontWeight.Bold)
-                Text(stringResource(R.string.account_delete_summary))
-                OutlinedButton(
-                    onClick = {
-                        accountPassword = ""
-                        accountConfirmed = false
-                        accountDeletionError = null
-                        showAccountDeletion = true
-                    },
-                    modifier = Modifier.testTag("delete-account"),
-                ) {
-                    Text(stringResource(R.string.delete_account))
-                }
-            }
-        }
     }
     deleteCandidate?.let { meal ->
         AlertDialog(
@@ -252,51 +199,6 @@ private fun DayScreen(
             },
             onDismiss = { photoDeleteCandidate = null },
         )
-    }
-    if (showAccountDeletion) {
-        AccountDeletionDialog(
-            password = accountPassword,
-            confirmed = accountConfirmed,
-            busy = accountDeleting,
-            error = accountDeletionError,
-            onPassword = {
-                accountPassword = it
-                accountDeletionError = null
-            },
-            onConfirmed = { accountConfirmed = it },
-            onConfirm = {
-                accountDeleting = true
-                accountDeletionError = null
-                scope.launch {
-                    runCatching {
-                        withContext(ioDispatcher) {
-                            authRepository.deleteAccount(accountPassword)
-                        }
-                    }.onSuccess {
-                        accountDeletionStatus = it
-                        accountPassword = ""
-                        accountConfirmed = false
-                        showAccountDeletion = false
-                    }.onFailure {
-                        accountDeletionError =
-                            if (it is ApiException && it.status == 403) {
-                                reauthenticationError
-                            } else {
-                                accountDeletionGenericError
-                            }
-                    }
-                    accountDeleting = false
-                }
-            },
-            onDismiss = {
-                accountPassword = ""
-                accountConfirmed = false
-                showAccountDeletion = false
-            },
-        )
-    }
-    accountDeletionStatus?.let { status ->
-        AccountDeletionFinishedDialog(status, onLoggedOut)
     }
 }
 

@@ -74,6 +74,22 @@ class MealSyncManager(
         normalized(store.read(requireUser())).targets
     }
 
+    suspend fun clearCaches() = mutex.withLock {
+        val userId = requireUser()
+        val snapshot = normalized(store.read(userId))
+        store.write(
+            userId,
+            snapshot.copy(
+                cachedMeals = emptyList(),
+                cachedDays = emptySet(),
+                daySummaries = emptyMap(),
+                targets = null,
+                favorites = emptyList(),
+                favoritesCached = false,
+            ),
+        )
+    }
+
     suspend fun cacheFavorites(favorites: List<FavoriteDto>) = mutex.withLock {
         val userId = requireUser()
         val snapshot = normalized(store.read(userId))

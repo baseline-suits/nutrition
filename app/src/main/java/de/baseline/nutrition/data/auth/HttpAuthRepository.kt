@@ -91,6 +91,7 @@ class HttpAuthRepository(
             )
         }
         userId?.let { syncScheduler?.cancel(it) }
+        userId?.let { localDataCleaner?.invoke(it) }
         store.clear()
     }
 

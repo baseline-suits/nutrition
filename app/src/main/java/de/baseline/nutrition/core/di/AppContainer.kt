@@ -19,6 +19,8 @@ import de.baseline.nutrition.data.profile.ProfileRepository
 import de.baseline.nutrition.data.product.ProductRepository
 import de.baseline.nutrition.data.profile.OnboardingDraftStore
 import de.baseline.nutrition.data.session.SecureSessionStore
+import de.baseline.nutrition.data.settings.SettingsRepository
+import de.baseline.nutrition.data.settings.DefaultSettingsLocalDataSource
 import de.baseline.nutrition.data.sync.ApiMealRemoteDataSource
 import de.baseline.nutrition.data.sync.EncryptedMealQueueStore
 import de.baseline.nutrition.data.sync.MealSyncManager
@@ -66,6 +68,8 @@ class AppContainer(
     )
     val sessionRepository = authRepository
     val profileRepository = ProfileRepository(api)
+    val settingsRepository = SettingsRepository(api)
+    val settingsLocalDataSource = DefaultSettingsLocalDataSource(diaryRepository)
     val onboardingDraftStore = OnboardingDraftStore(sessionStore)
     val captureRepository = CaptureRepository(api)
     val productRepository = ProductRepository(api)
