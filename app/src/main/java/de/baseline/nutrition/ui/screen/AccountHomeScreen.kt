@@ -12,6 +12,7 @@ import de.baseline.nutrition.data.capture.CaptureRepository
 import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.product.ProductRepository
 import de.baseline.nutrition.domain.auth.AuthRepository
+import de.baseline.nutrition.domain.health.HealthRepository
 import de.baseline.nutrition.ui.barcode.BarcodeScreen
 import de.baseline.nutrition.ui.barcode.BarcodeViewModel
 import de.baseline.nutrition.ui.diary.DiaryScreen
@@ -19,6 +20,8 @@ import de.baseline.nutrition.ui.diary.DiaryError
 import de.baseline.nutrition.ui.diary.DiaryViewModel
 import de.baseline.nutrition.ui.history.HistoryScreen
 import de.baseline.nutrition.ui.history.HistoryViewModel
+import de.baseline.nutrition.ui.health.HealthConnectScreen
+import de.baseline.nutrition.ui.health.HealthConnectViewModel
 import de.baseline.nutrition.ui.capture.CaptureScreen
 import de.baseline.nutrition.ui.capture.CaptureViewModel
 import de.baseline.nutrition.ui.reuse.ReuseMode
@@ -32,6 +35,7 @@ fun AccountHomeScreen(
     diaryRepository: DiaryRepository,
     captureRepository: CaptureRepository,
     productRepository: ProductRepository,
+    healthRepository: HealthRepository,
     ioDispatcher: CoroutineDispatcher,
     onLoggedOut: () -> Unit,
 ) {
@@ -48,6 +52,9 @@ fun AccountHomeScreen(
     )
     val historyViewModel: HistoryViewModel = viewModel(
         factory = HistoryViewModel.factory(diaryRepository, ioDispatcher),
+    )
+    val healthViewModel: HealthConnectViewModel = viewModel(
+        factory = HealthConnectViewModel.factory(healthRepository, ioDispatcher),
     )
     LaunchedEffect(diaryState.error, diaryState.sync.overview.authRequired) {
         if (diaryState.error == DiaryError.Session || diaryState.sync.overview.authRequired) {
@@ -135,6 +142,10 @@ fun AccountHomeScreen(
             },
             onClose = { activeFlow = "diary" },
         )
+        "health" -> HealthConnectScreen(
+            viewModel = healthViewModel,
+            onClose = { activeFlow = "diary" },
+        )
         else -> DiaryScreen(
             diaryViewModel,
             authRepository,
@@ -142,6 +153,7 @@ fun AccountHomeScreen(
             onLoggedOut,
             onQuickAdd = { activeFlow = "capture" },
             onHistory = { activeFlow = "history" },
+            onHealthConnect = { activeFlow = "health" },
         )
     }
 }

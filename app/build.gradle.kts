@@ -98,6 +98,8 @@ dependencies {
     implementation(libs.mlkit.barcode)
     implementation(libs.coil.compose)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.health.connect.client)
+    implementation(libs.guava)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

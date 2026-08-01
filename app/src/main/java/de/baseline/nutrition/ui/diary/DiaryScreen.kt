@@ -73,6 +73,7 @@ fun DiaryScreen(
     onLoggedOut: () -> Unit,
     onQuickAdd: () -> Unit,
     onHistory: () -> Unit,
+    onHealthConnect: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     when {
@@ -86,6 +87,7 @@ fun DiaryScreen(
             onLoggedOut,
             onQuickAdd,
             onHistory,
+            onHealthConnect,
         )
     }
 }
@@ -99,6 +101,7 @@ private fun DayScreen(
     onLoggedOut: () -> Unit,
     onQuickAdd: () -> Unit,
     onHistory: () -> Unit,
+    onHealthConnect: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
@@ -141,6 +144,12 @@ private fun DayScreen(
             modifier = Modifier.testTag("open-history"),
         ) {
             Text(stringResource(R.string.open_history))
+        }
+        OutlinedButton(
+            onClick = onHealthConnect,
+            modifier = Modifier.testTag("open-health-connect"),
+        ) {
+            Text(stringResource(R.string.health_connect_title))
         }
         SyncOverviewCard(state.sync.overview, viewModel::syncNow)
         if (state.loading && state.meals.isEmpty()) {

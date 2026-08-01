@@ -8,6 +8,8 @@ import de.baseline.nutrition.core.coroutines.DispatcherProvider
 import de.baseline.nutrition.data.auth.HttpAuthRepository
 import de.baseline.nutrition.data.capture.CaptureRepository
 import de.baseline.nutrition.data.diary.DiaryRepository
+import de.baseline.nutrition.data.health.AndroidHealthConnectGateway
+import de.baseline.nutrition.data.health.DefaultHealthRepository
 import de.baseline.nutrition.data.network.ApiClient
 import de.baseline.nutrition.data.network.ServerSettingsStore
 import de.baseline.nutrition.data.profile.ProfileRepository
@@ -42,6 +44,10 @@ class AppContainer(
         scheduler = syncScheduler,
     )
     val diaryRepository = DiaryRepository(api, sessionStore, mealSyncManager)
+    val healthRepository = DefaultHealthRepository(
+        AndroidHealthConnectGateway(context.applicationContext),
+        sessionStore,
+    )
     val authRepository: AuthRepository = HttpAuthRepository(
         api,
         sessionStore,
