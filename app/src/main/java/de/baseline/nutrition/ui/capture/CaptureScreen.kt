@@ -607,13 +607,13 @@ private fun normalizeImage(context: Context, uri: Uri): String {
             BitmapFactory.decodeStream(it, null, options)
         }
         require(options.outWidth.toLong() * options.outHeight in 1..25_000_000L)
-        val sample = generateSequence(1) { it * 2 }
+        val sampleSize = generateSequence(1) { it * 2 }
             .first { max(options.outWidth, options.outHeight) / it <= 2048 }
         val decoded = context.contentResolver.openInputStream(uri).use {
             BitmapFactory.decodeStream(
                 it,
                 null,
-                BitmapFactory.Options().apply { inSampleSize = sample },
+                BitmapFactory.Options().apply { inSampleSize = sampleSize },
             )
         }
         requireNotNull(decoded)
