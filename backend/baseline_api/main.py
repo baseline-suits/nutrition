@@ -68,6 +68,7 @@ UPLOAD_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp"}
 UPLOAD_MAX_BYTES = 15 * 1024 * 1024
 UPLOAD_MAX_PIXELS = 25_000_000
 UPLOAD_MAX_EDGE = 2048
+DELETION_RETENTION_DAYS = 45
 OFF_NUTRIENTS = {
     "energy-kcal": ("energy", "kcal"),
     "proteins": ("protein", "g"),
@@ -164,11 +165,18 @@ def migrate() -> None:
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (migration.name,)
             ).fetchone():
                 continue
-            connection.executescript(migration.read_text(encoding="utf-8"))
-            connection.execute(
-                "INSERT INTO schema_migrations VALUES (?, ?)", (migration.name, iso(now()))
-            )
-        connection.commit()
+            version = migration.name.replace("'", "''")
+            applied_at = iso(now()).replace("'", "''")
+            script = migration.read_text(encoding="utf-8")
+            try:
+                connection.executescript(
+                    f"BEGIN IMMEDIATE;\n{script}\n"
+                    "INSERT INTO schema_migrations VALUES "
+                    f"('{version}', '{applied_at}');\nCOMMIT;"
+                )
+            except Exception:
+                connection.rollback()
+                raise
 
 
 class ApiError(BaseModel):
@@ -198,6 +206,10 @@ class SlidingWindow:
                 fail(429, "rate_limited", "Zu viele Versuche. Bitte später erneut versuchen.")
             bucket.append(timestamp)
 
+    def clear(self, key: str) -> None:
+        with self.lock:
+            self.entries.pop(key, None)
+
 
 auth_limit = SlidingWindow()
 analysis_limit = SlidingWindow(attempts=8, window_seconds=60)
@@ -207,6 +219,16 @@ off_limit = SlidingWindow(attempts=30, window_seconds=60)
 class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=80, pattern=r"^[^\s]+$")
     password: str = Field(min_length=10, max_length=256)
+
+
+class AccountDeletionRequest(BaseModel):
+    password: str = Field(min_length=10, max_length=256)
+    confirmation: Literal["DELETE"]
+
+
+class AccountDeletionResponse(BaseModel):
+    deletion_id: str
+    status: Literal["completed", "accepted"]
 
 
 class Registration(Credentials):
@@ -257,7 +279,7 @@ def current_user(authorization: Annotated[str | None, Header()] = None) -> UserC
         row = connection.execute(
             """SELECT u.*, s.id session_id, s.expires_at, s.revoked_at
                FROM sessions s JOIN users u ON u.id = s.user_id
-               WHERE s.token_hash = ?""",
+               WHERE s.token_hash = ? AND u.deletion_requested_at IS NULL""",
             (digest(token),),
         ).fetchone()
     if not row or row["revoked_at"] or datetime.fromisoformat(row["expires_at"]) <= now():
@@ -270,6 +292,15 @@ def current_user(authorization: Annotated[str | None, Header()] = None) -> UserC
         onboarding_complete=bool(row["onboarding_complete"]),
         session_id=row["session_id"],
     )
+
+
+def ensure_active_user(connection: sqlite3.Connection, user_id: str) -> None:
+    active = connection.execute(
+        "SELECT 1 FROM users WHERE id=? AND deletion_requested_at IS NULL",
+        (user_id,),
+    ).fetchone()
+    if not active:
+        fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
 
 
 class NutrientInput(BaseModel):
@@ -406,6 +437,7 @@ class MealOutput(MealInput):
     ingredients: list[IngredientOutput]  # type: ignore[assignment]
     nutrients: list[NutrientOutput]  # type: ignore[assignment]
     totals: dict[str, str]
+    photo_deleted: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -914,7 +946,7 @@ def object_path(key: str) -> Path:
 
 
 def remove_upload_files(object_key: str) -> None:
-    for suffix in ("", ".upload", ".tmp"):
+    for suffix in ("", ".upload", ".tmp", ".thumb"):
         path = object_path(f"{object_key}{suffix}")
         try:
             path.unlink()
@@ -996,23 +1028,293 @@ def finalize_upload_file(row: sqlite3.Row) -> tuple[int, int, int]:
 
 def cleanup_expired_uploads() -> int:
     migrate()
-    deleted = 0
+    job_ids: list[str] = []
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute(
             """SELECT * FROM photo_uploads
                WHERE retained_at IS NULL AND deleted_at IS NULL AND expires_at<=?""",
             (iso(now()),),
         ).fetchall()
         for row in rows:
-            remove_upload_files(row["object_key"])
+            stamp = iso(now())
+            meal_ids = [
+                attachment["meal_id"]
+                for attachment in connection.execute(
+                    "SELECT meal_id FROM attachments WHERE upload_id=?",
+                    (row["id"],),
+                )
+            ]
+            if meal_ids:
+                placeholders = ",".join("?" for _ in meal_ids)
+                connection.execute(
+                    f"""UPDATE meals SET photo_deleted_at=?,updated_at=?
+                        WHERE user_id=? AND id IN ({placeholders})""",
+                    (stamp, stamp, row["user_id"], *meal_ids),
+                )
+            connection.execute("DELETE FROM attachments WHERE upload_id=?", (row["id"],))
+            clear_analysis_upload_references(connection, row["id"])
             connection.execute(
                 """UPDATE photo_uploads
                    SET status='deleted',deleted_at=?,updated_at=? WHERE id=?""",
-                (iso(now()), iso(now()), row["id"]),
+                (stamp, stamp, row["id"]),
             )
-            deleted += 1
+            job_ids.append(
+                enqueue_deletion_job(
+                    connection,
+                    row["user_id"],
+                    "photo",
+                    row["id"],
+                    [row["object_key"]],
+                    [row["id"]],
+                )
+            )
         connection.commit()
-    return deleted
+    for job_id in job_ids:
+        process_deletion_job(job_id)
+    return len(job_ids)
+
+
+def clear_analysis_upload_references(
+    connection: sqlite3.Connection,
+    upload_id: str,
+) -> None:
+    connection.execute(
+        "DELETE FROM analysis_requests WHERE attachment_id=?",
+        (upload_id,),
+    )
+
+
+def analysis_write_blocker(
+    connection: sqlite3.Connection,
+    user_id: str,
+    attachment_id: str | None,
+) -> Literal["account", "photo"] | None:
+    active_user = connection.execute(
+        "SELECT 1 FROM users WHERE id=? AND deletion_requested_at IS NULL",
+        (user_id,),
+    ).fetchone()
+    if not active_user:
+        return "account"
+    if attachment_id:
+        active_photo = connection.execute(
+            """SELECT 1 FROM photo_uploads
+               WHERE id=? AND user_id=? AND status IN ('ready','analysis_attached')""",
+            (attachment_id, user_id),
+        ).fetchone()
+        if not active_photo:
+            return "photo"
+    return None
+
+
+def enqueue_deletion_job(
+    connection: sqlite3.Connection,
+    user_id: str,
+    kind: Literal["meal", "photo", "account"],
+    target_id: str,
+    object_keys: list[str],
+    upload_ids: list[str],
+    *,
+    reset_completed: bool = False,
+) -> str:
+    existing = connection.execute(
+        "SELECT id,status FROM deletion_jobs WHERE kind=? AND target_id=?",
+        (kind, target_id),
+    ).fetchone()
+    stamp = iso(now())
+    if existing:
+        if existing["status"] == "completed" and not reset_completed:
+            return existing["id"]
+        connection.execute(
+            """UPDATE deletion_jobs
+               SET user_id=?,object_keys_json=?,upload_ids_json=?,status='pending',
+                   next_attempt_at=NULL,error_code=NULL,updated_at=?,completed_at=NULL
+               WHERE id=?""",
+            (
+                user_id,
+                json.dumps(sorted(set(object_keys)), separators=(",", ":")),
+                json.dumps(sorted(set(upload_ids)), separators=(",", ":")),
+                stamp,
+                existing["id"],
+            ),
+        )
+        return existing["id"]
+    job_id = uid()
+    connection.execute(
+        """INSERT INTO deletion_jobs (
+           id,user_id,kind,target_id,object_keys_json,upload_ids_json,status,
+           attempts,next_attempt_at,error_code,created_at,updated_at,completed_at
+           ) VALUES (?,?,?,?,?,?,'pending',0,NULL,NULL,?,?,NULL)""",
+        (
+            job_id,
+            user_id,
+            kind,
+            target_id,
+            json.dumps(sorted(set(object_keys)), separators=(",", ":")),
+            json.dumps(sorted(set(upload_ids)), separators=(",", ":")),
+            stamp,
+            stamp,
+        ),
+    )
+    return job_id
+
+
+def mark_deletion_retry(job_id: str, error_code: str) -> None:
+    with db() as connection:
+        row = connection.execute(
+            "SELECT attempts FROM deletion_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return
+        attempts = row["attempts"] + 1
+        delay_seconds = min(60 * (2 ** min(attempts - 1, 8)), 6 * 60 * 60)
+        connection.execute(
+            """UPDATE deletion_jobs
+               SET status='failed_retryable',attempts=?,next_attempt_at=?,
+                   error_code=?,updated_at=? WHERE id=?""",
+            (
+                attempts,
+                iso(now() + timedelta(seconds=delay_seconds)),
+                error_code,
+                iso(now()),
+                job_id,
+            ),
+        )
+        connection.commit()
+
+
+def process_deletion_job(job_id: str) -> bool:
+    with db() as connection:
+        row = connection.execute(
+            "SELECT * FROM deletion_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+    if not row or row["status"] == "completed":
+        return True
+    object_keys = json.loads(row["object_keys_json"])
+    upload_ids = json.loads(row["upload_ids_json"])
+    try:
+        for object_key in object_keys:
+            remove_upload_files(object_key)
+        stamp = iso(now())
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if row["kind"] == "account":
+                connection.execute(
+                    "UPDATE access_codes SET consumed_by=NULL WHERE consumed_by=?",
+                    (row["user_id"],),
+                )
+                connection.execute(
+                    """DELETE FROM users
+                       WHERE id=? AND deletion_requested_at IS NOT NULL""",
+                    (row["user_id"],),
+                )
+                connection.execute(
+                    """UPDATE account_deletion_tombstones
+                       SET completed_at=?,retain_until=? WHERE user_id=?""",
+                    (
+                        stamp,
+                        iso(now() + timedelta(days=DELETION_RETENTION_DAYS)),
+                        row["user_id"],
+                    ),
+                )
+            elif upload_ids:
+                placeholders = ",".join("?" for _ in upload_ids)
+                connection.execute(
+                    f"""DELETE FROM photo_uploads
+                        WHERE user_id=? AND status='deleted'
+                          AND id IN ({placeholders})""",
+                    (row["user_id"], *upload_ids),
+                )
+            connection.execute(
+                """UPDATE deletion_jobs
+                   SET status='completed',attempts=attempts+1,next_attempt_at=NULL,
+                       error_code=NULL,updated_at=?,completed_at=? WHERE id=?""",
+                (stamp, stamp, job_id),
+            )
+            connection.commit()
+        analysis_limit.clear(row["user_id"])
+        off_limit.clear(row["user_id"])
+        return True
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        mark_deletion_retry(job_id, "deletion_step_failed")
+        return False
+
+
+def apply_deletion_suppressions() -> int:
+    suppressed = 0
+    with db() as connection:
+        rows = connection.execute(
+            """SELECT u.id FROM users u
+               JOIN account_deletion_tombstones t ON t.user_id=u.id"""
+        ).fetchall()
+        for row in rows:
+            stamp = iso(now())
+            connection.execute(
+                "UPDATE users SET deletion_requested_at=? WHERE id=?",
+                (stamp, row["id"]),
+            )
+            connection.execute(
+                """UPDATE sessions SET revoked_at=?
+                   WHERE user_id=? AND revoked_at IS NULL""",
+                (stamp, row["id"]),
+            )
+            uploads = connection.execute(
+                "SELECT id,object_key FROM photo_uploads WHERE user_id=?",
+                (row["id"],),
+            ).fetchall()
+            connection.execute(
+                """UPDATE photo_uploads
+                   SET status='deleted',deleted_at=?,retained_at=NULL,updated_at=?
+                   WHERE user_id=?""",
+                (stamp, stamp, row["id"]),
+            )
+            enqueue_deletion_job(
+                connection,
+                row["id"],
+                "account",
+                row["id"],
+                [upload["object_key"] for upload in uploads],
+                [upload["id"] for upload in uploads],
+                reset_completed=True,
+            )
+            suppressed += 1
+        connection.commit()
+    return suppressed
+
+
+def retry_deletion_jobs(force: bool = False) -> dict[str, int]:
+    with db() as connection:
+        if force:
+            rows = connection.execute(
+                """SELECT id FROM deletion_jobs
+                   WHERE status IN ('pending','failed_retryable')
+                   ORDER BY created_at LIMIT 100"""
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT id FROM deletion_jobs
+                   WHERE status='pending'
+                      OR (status='failed_retryable' AND next_attempt_at<=?)
+                   ORDER BY created_at LIMIT 100""",
+                (iso(now()),),
+            ).fetchall()
+    completed = sum(process_deletion_job(row["id"]) for row in rows)
+    cutoff = iso(now() - timedelta(days=DELETION_RETENTION_DAYS))
+    with db() as connection:
+        connection.execute(
+            """DELETE FROM deletion_jobs
+               WHERE status='completed' AND completed_at<?""",
+            (cutoff,),
+        )
+        connection.execute(
+            """DELETE FROM account_deletion_tombstones
+               WHERE completed_at IS NOT NULL AND retain_until<?""",
+            (iso(now()),),
+        )
+        connection.commit()
+    return {"attempted": len(rows), "completed": completed}
 
 
 def analysis_telemetry_summary(days: int = 7) -> dict:
@@ -1154,6 +1456,10 @@ def attach_upload(
         """UPDATE photo_uploads
            SET status='analysis_attached',retained_at=?,updated_at=? WHERE id=?""",
         (stamp, stamp, upload["id"]),
+    )
+    connection.execute(
+        "UPDATE meals SET photo_deleted_at=NULL WHERE id=? AND user_id=?",
+        (meal_id, user_id),
     )
 
 
@@ -1461,6 +1767,7 @@ def load_meals(
                 external_reference=source["external_reference"] if source else None,
                 attachment_id=attachments.get(meal_id),
                 version=meal["version"],
+                photo_deleted=meal["photo_deleted_at"] is not None,
                 created_at=datetime.fromisoformat(meal["created_at"]),
                 updated_at=datetime.fromisoformat(meal["updated_at"]),
             )
@@ -1477,9 +1784,18 @@ def load_meal(connection: sqlite3.Connection, user_id: str, meal_id: str) -> Mea
 
 def meal_snapshot(meal: MealOutput) -> MealInput:
     values = meal.model_dump(
-        exclude={"id", "version", "totals", "created_at", "updated_at", "attachment_id"}
+        exclude={
+            "id",
+            "version",
+            "totals",
+            "photo_deleted",
+            "created_at",
+            "updated_at",
+            "attachment_id",
+        }
     )
     values["attachment_id"] = None
+    values["external_reference"] = None
     return MealInput(**values)
 
 
@@ -1589,6 +1905,8 @@ app = FastAPI(title="Baseline Nutrition API", version="1.0.0")
 @app.on_event("startup")
 def startup() -> None:
     migrate()
+    apply_deletion_suppressions()
+    retry_deletion_jobs()
 
 
 @app.get("/health")
@@ -1618,7 +1936,9 @@ def register(payload: Registration, request: Request):
                 )
             user_id = uid()
             connection.execute(
-                "INSERT INTO users VALUES (?,?,?,?,?,?,?)",
+                """INSERT INTO users (
+                   id,username,password_hash,locale,timezone,onboarding_complete,created_at
+                   ) VALUES (?,?,?,?,?,?,?)""",
                 (
                     user_id,
                     payload.username,
@@ -1650,8 +1970,11 @@ def login(payload: Credentials, request: Request):
         f"login:{request.client.host if request.client else 'unknown'}:{payload.username.lower()}"
     )
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         user = connection.execute(
-            "SELECT * FROM users WHERE username=?", (payload.username,)
+            """SELECT * FROM users
+               WHERE username=? AND deletion_requested_at IS NULL""",
+            (payload.username,),
         ).fetchone()
         valid = False
         try:
@@ -1693,6 +2016,81 @@ def logout_all(user: Annotated[UserContext, Depends(current_user)]):
         connection.commit()
 
 
+@app.delete(
+    "/v1/account",
+    response_model=AccountDeletionResponse,
+    status_code=202,
+)
+def delete_account(
+    payload: AccountDeletionRequest,
+    user: Annotated[UserContext, Depends(current_user)],
+):
+    stamp = iso(now())
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        stored = connection.execute(
+            """SELECT password_hash FROM users
+               WHERE id=? AND deletion_requested_at IS NULL""",
+            (user.id,),
+        ).fetchone()
+        valid = False
+        try:
+            if stored:
+                PASSWORDS.verify(stored["password_hash"], payload.password)
+                valid = True
+        except VerifyMismatchError:
+            pass
+        if not valid:
+            connection.rollback()
+            fail(403, "reauthentication_failed", "Das Passwort ist falsch.")
+        connection.execute(
+            "UPDATE users SET deletion_requested_at=? WHERE id=?",
+            (stamp, user.id),
+        )
+        connection.execute(
+            """UPDATE sessions SET revoked_at=?
+               WHERE user_id=? AND revoked_at IS NULL""",
+            (stamp, user.id),
+        )
+        uploads = connection.execute(
+            "SELECT id,object_key FROM photo_uploads WHERE user_id=?",
+            (user.id,),
+        ).fetchall()
+        connection.execute(
+            """UPDATE photo_uploads
+               SET status='deleted',deleted_at=COALESCE(deleted_at,?),
+                   retained_at=NULL,updated_at=? WHERE user_id=?""",
+            (stamp, stamp, user.id),
+        )
+        connection.execute(
+            """INSERT INTO account_deletion_tombstones
+               (user_id,requested_at,completed_at,retain_until)
+               VALUES (?,?,NULL,?)
+               ON CONFLICT(user_id) DO UPDATE SET requested_at=excluded.requested_at,
+               completed_at=NULL,retain_until=excluded.retain_until""",
+            (
+                user.id,
+                stamp,
+                iso(now() + timedelta(days=DELETION_RETENTION_DAYS)),
+            ),
+        )
+        job_id = enqueue_deletion_job(
+            connection,
+            user.id,
+            "account",
+            user.id,
+            [upload["object_key"] for upload in uploads],
+            [upload["id"] for upload in uploads],
+            reset_completed=True,
+        )
+        connection.commit()
+    completed = process_deletion_job(job_id)
+    return AccountDeletionResponse(
+        deletion_id=job_id,
+        status="completed" if completed else "accepted",
+    )
+
+
 @app.put("/v1/profile")
 def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(current_user)]):
     stamp = iso(now())
@@ -1701,6 +2099,8 @@ def save_profile(payload: ProfileInput, user: Annotated[UserContext, Depends(cur
         json.dumps(payload.calculation, separators=(",", ":")) if payload.calculation else None
     )
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         connection.execute(
             """INSERT INTO profiles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(user_id) DO UPDATE SET birth_date=excluded.birth_date,
@@ -1763,6 +2163,7 @@ def create_upload(
     stamp = iso(now())
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         existing = connection.execute(
             """SELECT * FROM photo_uploads
                WHERE user_id=? AND idempotency_key=?""",
@@ -1846,6 +2247,23 @@ async def upload_content(
         fail(413, "invalid_upload_size", "Die Bildgröße stimmt nicht mit dem Upload überein.")
 
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        active_upload = connection.execute(
+            """SELECT p.id FROM photo_uploads p
+               JOIN users u ON u.id=p.user_id
+               WHERE p.id=? AND p.user_id=? AND u.deletion_requested_at IS NULL
+                 AND p.status IN ('pending_upload','uploaded')""",
+            (upload_id, user.id),
+        ).fetchone()
+        if not active_upload:
+            remove_upload_files(row["object_key"])
+            active_user = connection.execute(
+                "SELECT 1 FROM users WHERE id=? AND deletion_requested_at IS NULL",
+                (user.id,),
+            ).fetchone()
+            if not active_user:
+                fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
+            fail(404, "not_found", "Foto nicht gefunden.")
         connection.execute(
             """UPDATE photo_uploads
                SET status='uploaded',size_bytes=?,updated_at=?
@@ -1868,14 +2286,49 @@ def finalize_upload(upload_id: str, user: Annotated[UserContext, Depends(current
         size_bytes, width, height = finalize_upload_file(row)
     except ValueError:
         with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active_upload = connection.execute(
+                """SELECT p.id FROM photo_uploads p
+                   JOIN users u ON u.id=p.user_id
+                   WHERE p.id=? AND p.user_id=? AND u.deletion_requested_at IS NULL
+                     AND p.status='uploaded'""",
+                (upload_id, user.id),
+            ).fetchone()
+            if not active_upload:
+                remove_upload_files(row["object_key"])
+                active_user = connection.execute(
+                    "SELECT 1 FROM users WHERE id=? AND deletion_requested_at IS NULL",
+                    (user.id,),
+                ).fetchone()
+                connection.rollback()
+                if not active_user:
+                    fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
+                fail(404, "not_found", "Foto nicht gefunden.")
             connection.execute(
                 """UPDATE photo_uploads SET status='failed',expires_at=?,updated_at=?
-                   WHERE id=? AND user_id=?""",
+                   WHERE id=? AND user_id=? AND status='uploaded'""",
                 (iso(now()), iso(now()), upload_id, user.id),
             )
             connection.commit()
         fail(422, "invalid_image", "Die Datei ist kein unterstütztes, sicheres Bild.")
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        active_upload = connection.execute(
+            """SELECT p.id FROM photo_uploads p
+               JOIN users u ON u.id=p.user_id
+               WHERE p.id=? AND p.user_id=? AND u.deletion_requested_at IS NULL
+                 AND p.status='uploaded'""",
+            (upload_id, user.id),
+        ).fetchone()
+        if not active_upload:
+            remove_upload_files(row["object_key"])
+            active_user = connection.execute(
+                "SELECT 1 FROM users WHERE id=? AND deletion_requested_at IS NULL",
+                (user.id,),
+            ).fetchone()
+            if not active_user:
+                fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
+            fail(404, "not_found", "Foto nicht gefunden.")
         connection.execute(
             """UPDATE photo_uploads
                SET status='ready',stored_media_type='image/jpeg',size_bytes=?,
@@ -1916,23 +2369,58 @@ def download_upload(upload_id: str, user: Annotated[UserContext, Depends(current
 
 @app.delete("/v1/uploads/{upload_id}", status_code=204)
 def delete_upload(upload_id: str, user: Annotated[UserContext, Depends(current_user)]):
+    job_id: str | None = None
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         row = connection.execute(
             "SELECT * FROM photo_uploads WHERE id=? AND user_id=?",
             (upload_id, user.id),
         ).fetchone()
-        if not row or row["status"] == "deleted":
+        if not row:
+            existing = connection.execute(
+                """SELECT id FROM deletion_jobs
+                   WHERE kind='photo' AND target_id=? AND user_id=?""",
+                (upload_id, user.id),
+            ).fetchone()
+            connection.commit()
+            if existing:
+                process_deletion_job(existing["id"])
             return
-        remove_upload_files(row["object_key"])
-        connection.execute("DELETE FROM attachments WHERE upload_id=?", (upload_id,))
         stamp = iso(now())
+        meal_ids = [
+            item["meal_id"]
+            for item in connection.execute(
+                "SELECT meal_id FROM attachments WHERE upload_id=?",
+                (upload_id,),
+            )
+        ]
+        if meal_ids:
+            placeholders = ",".join("?" for _ in meal_ids)
+            connection.execute(
+                f"""UPDATE meals SET photo_deleted_at=?,updated_at=?
+                    WHERE user_id=? AND id IN ({placeholders})""",
+                (stamp, stamp, user.id, *meal_ids),
+            )
+        connection.execute("DELETE FROM attachments WHERE upload_id=?", (upload_id,))
+        clear_analysis_upload_references(connection, upload_id)
         connection.execute(
             """UPDATE photo_uploads
                SET status='deleted',deleted_at=?,retained_at=NULL,updated_at=?
                WHERE id=? AND user_id=?""",
             (stamp, stamp, upload_id, user.id),
         )
+        job_id = enqueue_deletion_job(
+            connection,
+            user.id,
+            "photo",
+            upload_id,
+            [row["object_key"]],
+            [upload_id],
+        )
         connection.commit()
+    if job_id:
+        process_deletion_job(job_id)
 
 
 @app.get("/v1/products/barcode/{barcode}", response_model=ProductOutput)
@@ -2027,6 +2515,8 @@ def create_private_food(
     food_id = uid()
     stamp = iso(now())
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         connection.execute(
             "INSERT INTO private_foods VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
@@ -2081,6 +2571,8 @@ def update_private_food(
 ):
     stamp = iso(now())
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         current = connection.execute(
             "SELECT version FROM private_foods WHERE id=? AND user_id=?", (food_id, user.id)
         ).fetchone()
@@ -2115,6 +2607,8 @@ def update_private_food(
 )
 def duplicate_private_food(food_id: str, user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         original = load_private_food(connection, user.id, food_id)
         copy_id = uid()
         stamp = iso(now())
@@ -2141,6 +2635,8 @@ def duplicate_private_food(food_id: str, user: Annotated[UserContext, Depends(cu
 @app.delete("/v1/private-foods/{food_id}", status_code=204)
 def delete_private_food(food_id: str, user: Annotated[UserContext, Depends(current_user)]):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         changed = connection.execute(
             "DELETE FROM private_foods WHERE id=? AND user_id=?", (food_id, user.id)
         ).rowcount
@@ -2163,6 +2659,7 @@ def create_meal(
     with db() as connection:
         try:
             connection.execute("BEGIN IMMEDIATE")
+            ensure_active_user(connection, user.id)
             replay = load_repeated_mutation(
                 connection,
                 user.id,
@@ -2244,6 +2741,7 @@ def update_meal(
     request_hash = mutation_request_hash(payload)
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         if idempotency_key:
             replay = load_repeated_mutation(
                 connection,
@@ -2387,6 +2885,7 @@ def delete_meal(
     request_hash = digest(f"delete:{meal_id}")
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         if idempotency_key:
             replay = load_repeated_mutation(
                 connection,
@@ -2399,11 +2898,98 @@ def delete_meal(
             if replay:
                 connection.commit()
                 return
-        connection.execute(
-            """UPDATE meals SET deleted_at=?,updated_at=?
+        meal = connection.execute(
+            """SELECT id,client_id FROM meals
                WHERE id=? AND user_id=? AND deleted_at IS NULL""",
-            (iso(now()), iso(now()), meal_id, user.id),
-        )
+            (meal_id, user.id),
+        ).fetchone()
+        job_id: str | None = None
+        if meal:
+            uploads = connection.execute(
+                """SELECT DISTINCT p.id,p.object_key
+                   FROM attachments a
+                   JOIN photo_uploads p ON p.id=a.upload_id
+                   WHERE a.meal_id=? AND p.user_id=?""",
+                (meal_id, user.id),
+            ).fetchall()
+            analysis_references = [
+                row["external_reference"]
+                for row in connection.execute(
+                    """SELECT external_reference FROM provenance
+                       WHERE meal_id=? AND external_reference LIKE 'analysis:%'""",
+                    (meal_id,),
+                )
+            ]
+            connection.execute(
+                """DELETE FROM meal_mutations
+                   WHERE user_id=? AND meal_id IN (?,?)""",
+                (user.id, meal_id, meal["client_id"]),
+            )
+            favorite_rows = connection.execute(
+                """SELECT id,snapshot_json FROM favorites
+                   WHERE user_id=? AND original_meal_id=?""",
+                (user.id, meal_id),
+            ).fetchall()
+            for favorite in favorite_rows:
+                try:
+                    favorite_snapshot = MealInput.model_validate_json(favorite["snapshot_json"])
+                    connection.execute(
+                        """UPDATE favorites SET snapshot_json=?,updated_at=?
+                           WHERE id=? AND user_id=?""",
+                        (
+                            favorite_snapshot.model_copy(
+                                update={"attachment_id": None, "external_reference": None}
+                            ).model_dump_json(),
+                            iso(now()),
+                            favorite["id"],
+                            user.id,
+                        ),
+                    )
+                except ValueError:
+                    connection.execute(
+                        "DELETE FROM favorites WHERE id=? AND user_id=?",
+                        (favorite["id"], user.id),
+                    )
+            connection.execute(
+                "DELETE FROM meals WHERE id=? AND user_id=?",
+                (meal_id, user.id),
+            )
+            for reference in analysis_references:
+                still_referenced = connection.execute(
+                    """SELECT 1 FROM provenance p
+                       JOIN meals m ON m.id=p.meal_id
+                       WHERE p.external_reference=? AND m.user_id=? LIMIT 1""",
+                    (reference, user.id),
+                ).fetchone()
+                if not still_referenced:
+                    connection.execute(
+                        "DELETE FROM analysis_requests WHERE id=? AND user_id=?",
+                        (reference.removeprefix("analysis:"), user.id),
+                    )
+            orphaned_uploads = []
+            for upload in uploads:
+                other_reference = connection.execute(
+                    "SELECT 1 FROM attachments WHERE upload_id=? LIMIT 1",
+                    (upload["id"],),
+                ).fetchone()
+                if not other_reference:
+                    clear_analysis_upload_references(connection, upload["id"])
+                    connection.execute(
+                        """UPDATE photo_uploads
+                           SET status='deleted',deleted_at=?,retained_at=NULL,updated_at=?
+                           WHERE id=? AND user_id=?""",
+                        (iso(now()), iso(now()), upload["id"], user.id),
+                    )
+                    orphaned_uploads.append(upload)
+            if orphaned_uploads:
+                job_id = enqueue_deletion_job(
+                    connection,
+                    user.id,
+                    "meal",
+                    meal_id,
+                    [upload["object_key"] for upload in orphaned_uploads],
+                    [upload["id"] for upload in orphaned_uploads],
+                )
         if idempotency_key:
             record_mutation(
                 connection,
@@ -2415,6 +3001,8 @@ def delete_meal(
                 None,
             )
         connection.commit()
+    if job_id:
+        process_deletion_job(job_id)
 
 
 @app.get("/v1/days/{local_day}/meals", response_model=list[MealOutput])
@@ -2632,6 +3220,8 @@ def duplicate_meal(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         original = load_meal(connection, user.id, meal_id)
         existing = connection.execute(
             "SELECT id FROM meals WHERE user_id=? AND client_id=?", (user.id, idempotency_key)
@@ -2653,6 +3243,8 @@ def create_favorite(
     user: Annotated[UserContext, Depends(current_user)],
 ):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         original = load_meal(connection, user.id, meal_id)
         existing = connection.execute(
             "SELECT * FROM favorites WHERE user_id=? AND original_meal_id=?",
@@ -2706,6 +3298,8 @@ def update_favorite(
     user: Annotated[UserContext, Depends(current_user)],
 ):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         favorite = load_favorite(connection, user.id, favorite_id)
         snapshot_payload = (
             payload.meal.model_copy(update={"attachment_id": None})
@@ -2733,6 +3327,8 @@ def delete_favorite(
     user: Annotated[UserContext, Depends(current_user)],
 ):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         changed = connection.execute(
             "DELETE FROM favorites WHERE id=? AND user_id=?",
             (favorite_id, user.id),
@@ -2749,6 +3345,8 @@ def favorite_draft(
     user: Annotated[UserContext, Depends(current_user)],
 ):
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_active_user(connection, user.id)
         favorite = load_favorite(connection, user.id, favorite_id)
         connection.execute(
             "UPDATE favorites SET last_used_at=? WHERE id=? AND user_id=?",
@@ -2811,6 +3409,9 @@ def analyze_meal(
     image_media_type: str | None = None
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if analysis_write_blocker(connection, user.id, payload.attachment_id) == "account":
+            connection.rollback()
+            fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
         existing = connection.execute(
             """SELECT * FROM analysis_requests
                WHERE user_id=? AND idempotency_key=?""",
@@ -2903,31 +3504,66 @@ def analyze_meal(
         )
     except AnalysisProviderError as error:
         latency_ms = round((time.monotonic() - started) * 1000)
+        blocker: Literal["account", "photo"] | None = None
         with db() as connection:
-            connection.execute(
-                """UPDATE analysis_requests
-                   SET status='failed',error_category=?,latency_ms=?,updated_at=?
-                   WHERE id=? AND user_id=?""",
-                (error.category, latency_ms, iso(now()), analysis_id, user.id),
-            )
+            blocker = analysis_write_blocker(connection, user.id, payload.attachment_id)
+            if blocker:
+                connection.execute(
+                    "DELETE FROM analysis_requests WHERE id=? AND user_id=?",
+                    (analysis_id, user.id),
+                )
+            else:
+                connection.execute(
+                    """UPDATE analysis_requests
+                       SET status='failed',error_category=?,latency_ms=?,updated_at=?
+                       WHERE id=? AND user_id=?""",
+                    (error.category, latency_ms, iso(now()), analysis_id, user.id),
+                )
             connection.commit()
+        if blocker == "account":
+            fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
+        if blocker == "photo":
+            fail(404, "not_found", "Foto nicht gefunden.")
         status = 504 if error.category == "provider_timeout" else 503
         fail(status, error.category, "Die Analyse ist derzeit nicht verfügbar.")
     except ValueError:
         latency_ms = round((time.monotonic() - started) * 1000)
+        blocker = None
         with db() as connection:
-            connection.execute(
-                """UPDATE analysis_requests
-                   SET status='failed',error_category='invalid_model_schema',
-                       latency_ms=?,updated_at=?
-                   WHERE id=? AND user_id=?""",
-                (latency_ms, iso(now()), analysis_id, user.id),
-            )
+            blocker = analysis_write_blocker(connection, user.id, payload.attachment_id)
+            if blocker:
+                connection.execute(
+                    "DELETE FROM analysis_requests WHERE id=? AND user_id=?",
+                    (analysis_id, user.id),
+                )
+            else:
+                connection.execute(
+                    """UPDATE analysis_requests
+                       SET status='failed',error_category='invalid_model_schema',
+                           latency_ms=?,updated_at=?
+                       WHERE id=? AND user_id=?""",
+                    (latency_ms, iso(now()), analysis_id, user.id),
+                )
             connection.commit()
+        if blocker == "account":
+            fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
+        if blocker == "photo":
+            fail(404, "not_found", "Foto nicht gefunden.")
         fail(502, "invalid_model_schema", "Die Analyse lieferte kein gültiges Ergebnis.")
 
     latency_ms = round((time.monotonic() - started) * 1000)
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        blocker = analysis_write_blocker(connection, user.id, payload.attachment_id)
+        if blocker:
+            connection.execute(
+                "DELETE FROM analysis_requests WHERE id=? AND user_id=?",
+                (analysis_id, user.id),
+            )
+            connection.commit()
+            if blocker == "account":
+                fail(401, "invalid_session", "Die Sitzung ist nicht mehr gültig.")
+            fail(404, "not_found", "Foto nicht gefunden.")
         connection.execute(
             """UPDATE analysis_requests
                SET status='completed',response_json=?,latency_ms=?,

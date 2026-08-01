@@ -34,17 +34,23 @@ class AppContainer(
     )
     private val api = ApiClient(serverSettings::currentUrl, sessionStore)
     private val syncScheduler = WorkManagerMealSyncScheduler(context)
+    private val mealQueueStore = EncryptedMealQueueStore(context)
     private val mealSyncManager = MealSyncManager(
-        store = EncryptedMealQueueStore(context),
+        store = mealQueueStore,
         remote = ApiMealRemoteDataSource(api),
         currentUserId = sessionStore::readUserId,
         scheduler = syncScheduler,
     )
-    val authRepository: AuthRepository = HttpAuthRepository(api, sessionStore, syncScheduler)
+    val diaryRepository = DiaryRepository(api, sessionStore, mealSyncManager)
+    val authRepository: AuthRepository = HttpAuthRepository(
+        api,
+        sessionStore,
+        syncScheduler,
+        diaryRepository::clearLocalData,
+    )
     val sessionRepository = authRepository
     val profileRepository = ProfileRepository(api)
     val onboardingDraftStore = OnboardingDraftStore(sessionStore)
-    val diaryRepository = DiaryRepository(api, sessionStore, mealSyncManager)
     val captureRepository = CaptureRepository(api)
     val productRepository = ProductRepository(api)
 }

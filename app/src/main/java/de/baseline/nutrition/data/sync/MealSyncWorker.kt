@@ -31,6 +31,10 @@ class WorkManagerMealSyncScheduler(context: Context) : MealSyncScheduler {
             request,
         )
     }
+
+    override fun cancel(userId: String) {
+        workManager.cancelUniqueWork("meal-sync-$userId")
+    }
 }
 
 class MealSyncWorker(

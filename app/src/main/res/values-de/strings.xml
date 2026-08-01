@@ -254,4 +254,21 @@
     <string name="apply_my_version">Meine Version anwenden</string>
     <string name="sync_error_code">Technischer Grund: %1$s</string>
     <string name="sync_queue_full">Die Offline-Warteschlange ist voll. Synchronisiere oder verwirf fehlgeschlagene Änderungen.</string>
+    <string name="account_and_privacy">Konto und Datenschutz</string>
+    <string name="account_delete_summary">Konto und alle persönlichen Ernährungsdaten endgültig löschen.</string>
+    <string name="delete_account">Konto löschen</string>
+    <string name="delete_account_title">Konto endgültig löschen?</string>
+    <string name="delete_account_details">Profil, Ziele, Mahlzeiten, Fotos, Favoriten, Entwürfe, Sitzungen und Synchronisierungsdaten werden gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.</string>
+    <string name="delete_account_backup_notice">Verschlüsselte Backups können technisch noch bis zu 30 Tage bestehen. Ein Löschvermerk verhindert, dass das Konto bei einer Wiederherstellung reaktiviert wird.</string>
+    <string name="delete_account_confirmation">Ich verstehe, dass alle Daten endgültig gelöscht werden.</string>
+    <string name="account_delete_password_error">Das Passwort ist falsch.</string>
+    <string name="account_delete_failed">Die Kontolöschung konnte nicht sicher übernommen werden. Bitte erneut versuchen.</string>
+    <string name="account_deletion_received_title">Kontolöschung bestätigt</string>
+    <string name="account_deletion_completed">Das Konto und seine aktiven Daten wurden gelöscht.</string>
+    <string name="account_deletion_accepted">Das Konto ist gesperrt. Die sichere Entfernung aus dem Objektspeicher wurde zur Fertigstellung übernommen.</string>
+    <string name="delete_photo">Foto löschen</string>
+    <string name="delete_photo_title">Foto endgültig löschen?</string>
+    <string name="delete_photo_text">Das Foto zu „%1$s“ wird entfernt. Die gespeicherten Mahlzeitenwerte bleiben erhalten.</string>
+    <string name="photo_deleted">Foto gelöscht</string>
+    <string name="ok">OK</string>
 </resources>

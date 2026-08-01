@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,14 +23,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import de.baseline.nutrition.R
+import de.baseline.nutrition.data.network.ApiException
 import de.baseline.nutrition.data.profile.ProfileRepository
 import de.baseline.nutrition.data.profile.ProfileRequest
 import de.baseline.nutrition.data.profile.OnboardingDraft
 import de.baseline.nutrition.data.profile.OnboardingDraftStore
+import de.baseline.nutrition.domain.auth.AccountDeletionStatus
+import de.baseline.nutrition.domain.auth.AuthRepository
 import de.baseline.nutrition.domain.onboarding.GoalCalculator
 import de.baseline.nutrition.ui.LocaleController
+import de.baseline.nutrition.ui.diary.AccountDeletionDialog
+import de.baseline.nutrition.ui.diary.AccountDeletionFinishedDialog
 import de.baseline.nutrition.ui.theme.BaselineSpacing
 import java.time.LocalDate
 import java.time.ZoneId
@@ -41,6 +48,7 @@ import kotlinx.coroutines.withContext
 fun ProfileOnboardingScreen(
     repository: ProfileRepository,
     draftStore: OnboardingDraftStore,
+    authRepository: AuthRepository,
     ioDispatcher: CoroutineDispatcher,
     onComplete: () -> Unit,
 ) {
@@ -59,7 +67,15 @@ fun ProfileOnboardingScreen(
     var fat by rememberSaveable { mutableStateOf(restored.fat) }
     var error by rememberSaveable { mutableStateOf(false) }
     var saving by rememberSaveable { mutableStateOf(false) }
+    var showAccountDeletion by rememberSaveable { mutableStateOf(false) }
+    var accountPassword by remember { mutableStateOf("") }
+    var accountConfirmed by remember { mutableStateOf(false) }
+    var accountDeleting by remember { mutableStateOf(false) }
+    var accountDeletionError by remember { mutableStateOf<String?>(null) }
+    var accountDeletionStatus by remember { mutableStateOf<AccountDeletionStatus?>(null) }
     val scope = rememberCoroutineScope()
+    val reauthenticationError = stringResource(R.string.account_delete_password_error)
+    val accountDeletionGenericError = stringResource(R.string.account_delete_failed)
 
     fun currentDraft() = OnboardingDraft(
         locale = locale,
@@ -204,6 +220,65 @@ fun ProfileOnboardingScreen(
                 saving = false
             }
         }) { Text(stringResource(R.string.finish_onboarding)) }
+        Text(stringResource(R.string.account_and_privacy))
+        Text(stringResource(R.string.account_delete_summary))
+        OutlinedButton(
+            onClick = {
+                accountPassword = ""
+                accountConfirmed = false
+                accountDeletionError = null
+                showAccountDeletion = true
+            },
+            modifier = Modifier.testTag("onboarding-delete-account"),
+        ) {
+            Text(stringResource(R.string.delete_account))
+        }
+    }
+    if (showAccountDeletion) {
+        AccountDeletionDialog(
+            password = accountPassword,
+            confirmed = accountConfirmed,
+            busy = accountDeleting,
+            error = accountDeletionError,
+            onPassword = {
+                accountPassword = it
+                accountDeletionError = null
+            },
+            onConfirmed = { accountConfirmed = it },
+            onConfirm = {
+                accountDeleting = true
+                accountDeletionError = null
+                scope.launch {
+                    runCatching {
+                        withContext(ioDispatcher) {
+                            authRepository.deleteAccount(accountPassword)
+                        }
+                    }.onSuccess {
+                        draftStore.clear()
+                        accountDeletionStatus = it
+                        accountPassword = ""
+                        accountConfirmed = false
+                        showAccountDeletion = false
+                    }.onFailure {
+                        accountDeletionError =
+                            if (it is ApiException && it.status == 403) {
+                                reauthenticationError
+                            } else {
+                                accountDeletionGenericError
+                            }
+                    }
+                    accountDeleting = false
+                }
+            },
+            onDismiss = {
+                accountPassword = ""
+                accountConfirmed = false
+                showAccountDeletion = false
+            },
+        )
+    }
+    accountDeletionStatus?.let { status ->
+        AccountDeletionFinishedDialog(status, onComplete)
     }
 }
 

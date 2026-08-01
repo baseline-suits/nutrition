@@ -12,6 +12,7 @@ from baseline_api.main import (
     iso,
     migrate,
     now,
+    retry_deletion_jobs,
     uid,
 )
 
@@ -22,6 +23,7 @@ def main() -> None:
     invite = subcommands.add_parser("create-access-code")
     invite.add_argument("--hours", type=int, default=72)
     subcommands.add_parser("cleanup-uploads")
+    subcommands.add_parser("retry-deletions")
     report = subcommands.add_parser("analysis-report")
     report.add_argument("--days", type=int, default=7)
     args = parser.parse_args()
@@ -39,6 +41,9 @@ def main() -> None:
         print(code)
     elif args.command == "cleanup-uploads":
         print(cleanup_expired_uploads())
+    elif args.command == "retry-deletions":
+        migrate()
+        print(json.dumps(retry_deletion_jobs(force=True), indent=2))
     elif args.command == "analysis-report":
         migrate()
         print(json.dumps(analysis_telemetry_summary(args.days), indent=2))

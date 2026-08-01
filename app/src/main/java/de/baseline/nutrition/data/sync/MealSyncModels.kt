@@ -107,6 +107,7 @@ interface MealQueueStore {
 
 interface MealSyncScheduler {
     fun schedule(userId: String)
+    fun cancel(userId: String)
 }
 
 fun interface SyncTimeSource {

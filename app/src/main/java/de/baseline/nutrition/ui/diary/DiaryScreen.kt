@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -35,11 +37,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import de.baseline.nutrition.R
 import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.NutrientDto
+import de.baseline.nutrition.data.network.ApiException
 import de.baseline.nutrition.domain.auth.AuthRepository
+import de.baseline.nutrition.domain.auth.AccountDeletionStatus
 import de.baseline.nutrition.domain.diary.IngredientDraft
 import de.baseline.nutrition.domain.diary.MealEditorDraft
 import de.baseline.nutrition.domain.diary.NutrientFields
@@ -96,6 +102,15 @@ private fun DayScreen(
 ) {
     val scope = rememberCoroutineScope()
     var deleteCandidate by remember { mutableStateOf<MealDto?>(null) }
+    var photoDeleteCandidate by remember { mutableStateOf<MealDto?>(null) }
+    var showAccountDeletion by rememberSaveable { mutableStateOf(false) }
+    var accountPassword by remember { mutableStateOf("") }
+    var accountConfirmed by remember { mutableStateOf(false) }
+    var accountDeleting by remember { mutableStateOf(false) }
+    var accountDeletionError by remember { mutableStateOf<String?>(null) }
+    var accountDeletionStatus by remember { mutableStateOf<AccountDeletionStatus?>(null) }
+    val reauthenticationError = stringResource(R.string.account_delete_password_error)
+    val accountDeletionGenericError = stringResource(R.string.account_delete_failed)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -150,6 +165,7 @@ private fun DayScreen(
                                 onToggleFavorite = { viewModel.toggleFavorite(meal) },
                                 onEdit = { viewModel.edit(meal) },
                                 onDuplicate = { viewModel.duplicate(meal) },
+                                onDeletePhoto = { photoDeleteCandidate = meal },
                                 onDelete = { deleteCandidate = meal },
                                 onRetrySync = viewModel::retrySync,
                                 onDiscardSync = viewModel::discardSync,
@@ -166,6 +182,26 @@ private fun DayScreen(
             OutlinedButton(onClick = viewModel::refresh) { Text(stringResource(R.string.refresh)) }
             state.lastSync?.let { Text(stringResource(R.string.last_sync, it), modifier = Modifier.padding(top = 12.dp)) }
         }
+        Card(modifier = Modifier.fillMaxWidth().testTag("account-deletion-card")) {
+            Column(
+                Modifier.padding(BaselineSpacing.medium),
+                verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small),
+            ) {
+                Text(stringResource(R.string.account_and_privacy), fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.account_delete_summary))
+                OutlinedButton(
+                    onClick = {
+                        accountPassword = ""
+                        accountConfirmed = false
+                        accountDeletionError = null
+                        showAccountDeletion = true
+                    },
+                    modifier = Modifier.testTag("delete-account"),
+                ) {
+                    Text(stringResource(R.string.delete_account))
+                }
+            }
+        }
     }
     deleteCandidate?.let { meal ->
         AlertDialog(
@@ -180,6 +216,177 @@ private fun DayScreen(
             dismissButton = { TextButton(onClick = { deleteCandidate = null }) { Text(stringResource(R.string.cancel)) } },
         )
     }
+    photoDeleteCandidate?.let { meal ->
+        PhotoDeletionDialog(
+            meal = meal,
+            onConfirm = {
+                viewModel.deletePhoto(meal)
+                photoDeleteCandidate = null
+            },
+            onDismiss = { photoDeleteCandidate = null },
+        )
+    }
+    if (showAccountDeletion) {
+        AccountDeletionDialog(
+            password = accountPassword,
+            confirmed = accountConfirmed,
+            busy = accountDeleting,
+            error = accountDeletionError,
+            onPassword = {
+                accountPassword = it
+                accountDeletionError = null
+            },
+            onConfirmed = { accountConfirmed = it },
+            onConfirm = {
+                accountDeleting = true
+                accountDeletionError = null
+                scope.launch {
+                    runCatching {
+                        withContext(ioDispatcher) {
+                            authRepository.deleteAccount(accountPassword)
+                        }
+                    }.onSuccess {
+                        accountDeletionStatus = it
+                        accountPassword = ""
+                        accountConfirmed = false
+                        showAccountDeletion = false
+                    }.onFailure {
+                        accountDeletionError =
+                            if (it is ApiException && it.status == 403) {
+                                reauthenticationError
+                            } else {
+                                accountDeletionGenericError
+                            }
+                    }
+                    accountDeleting = false
+                }
+            },
+            onDismiss = {
+                accountPassword = ""
+                accountConfirmed = false
+                showAccountDeletion = false
+            },
+        )
+    }
+    accountDeletionStatus?.let { status ->
+        AccountDeletionFinishedDialog(status, onLoggedOut)
+    }
+}
+
+@Composable
+internal fun PhotoDeletionDialog(
+    meal: MealDto,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.delete_photo_title)) },
+        text = { Text(stringResource(R.string.delete_photo_text, meal.name)) },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                modifier = Modifier.testTag("confirm-delete-photo"),
+            ) {
+                Text(stringResource(R.string.delete_photo))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        },
+    )
+}
+
+@Composable
+internal fun AccountDeletionDialog(
+    password: String,
+    confirmed: Boolean,
+    busy: Boolean,
+    error: String?,
+    onPassword: (String) -> Unit,
+    onConfirmed: (Boolean) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(stringResource(R.string.delete_account_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(BaselineSpacing.small)) {
+                Text(stringResource(R.string.delete_account_details))
+                Text(stringResource(R.string.delete_account_backup_notice))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = onPassword,
+                    label = { Text(stringResource(R.string.password)) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    enabled = !busy,
+                    singleLine = true,
+                    modifier = Modifier.testTag("delete-account-password"),
+                )
+                Row {
+                    Checkbox(
+                        checked = confirmed,
+                        onCheckedChange = onConfirmed,
+                        enabled = !busy,
+                        modifier = Modifier.testTag("delete-account-confirmation"),
+                    )
+                    Text(
+                        stringResource(R.string.delete_account_confirmation),
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+                error?.let { Text(it) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && confirmed && password.length >= 10,
+                onClick = onConfirm,
+                modifier = Modifier.testTag("confirm-delete-account"),
+            ) {
+                Text(stringResource(R.string.delete_account))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text(stringResource(R.string.cancel))
+            }
+        },
+    )
+}
+
+@Composable
+internal fun AccountDeletionFinishedDialog(
+    status: AccountDeletionStatus,
+    onFinish: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text(stringResource(R.string.account_deletion_received_title)) },
+        text = {
+            Text(
+                stringResource(
+                    if (status == AccountDeletionStatus.Completed) {
+                        R.string.account_deletion_completed
+                    } else {
+                        R.string.account_deletion_accepted
+                    },
+                ),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onFinish,
+                modifier = Modifier.testTag("account-deletion-finished"),
+            ) {
+                Text(stringResource(R.string.ok))
+            }
+        },
+    )
 }
 
 @Composable
@@ -221,13 +428,14 @@ private fun ProgressLine(label: Int, currentText: String?, targetText: String?, 
 }
 
 @Composable
-private fun MealCard(
+internal fun MealCard(
     meal: MealDto,
     syncInfo: MealSyncInfo?,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
+    onDeletePhoto: () -> Unit,
     onDelete: () -> Unit,
     onRetrySync: (String) -> Unit,
     onDiscardSync: (String) -> Unit,
@@ -247,6 +455,12 @@ private fun MealCard(
                 "${stringResource(R.string.source)}: ${sourceLabel(source)}" +
                     if (syncInfo == null) " · ${stringResource(R.string.synced)}" else "",
             )
+            if (meal.photoDeleted) {
+                Text(
+                    stringResource(R.string.photo_deleted),
+                    modifier = Modifier.testTag("photo-deleted-${meal.id}"),
+                )
+            }
             val micros = (meal.nutrients + meal.ingredients.flatMap { it.nutrients })
                 .filterNot { it.key in coreNutrients }
             if (micros.isNotEmpty()) {
@@ -267,6 +481,14 @@ private fun MealCard(
                 }
                 TextButton(onClick = onEdit) { Text(stringResource(R.string.edit)) }
                 TextButton(onClick = onDuplicate) { Text(stringResource(R.string.duplicate)) }
+                if (meal.attachmentId != null && syncInfo == null) {
+                    TextButton(
+                        onClick = onDeletePhoto,
+                        modifier = Modifier.testTag("delete-photo-${meal.id}"),
+                    ) {
+                        Text(stringResource(R.string.delete_photo))
+                    }
+                }
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.delete)) }
             }
             syncInfo?.let { info ->

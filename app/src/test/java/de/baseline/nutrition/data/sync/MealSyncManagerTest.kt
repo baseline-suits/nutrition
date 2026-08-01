@@ -169,6 +169,22 @@ class MealSyncManagerTest {
         assertEquals(0, manager.uiState().overview.pending)
     }
 
+    @Test
+    fun accountCleanupRemovesQueueAndCachedMeals() = runTest {
+        val manager = manager(
+            InMemoryQueueStore(),
+            FakeRemote(),
+            FakeScheduler(),
+            FakeClock(30_000),
+        )
+        manager.enqueueSave(payload("account-cleanup"), null)
+
+        manager.clearUserData("user-a")
+
+        assertFalse(manager.cachedMeals("2026-07-31").available)
+        assertTrue(manager.uiState().operations.isEmpty())
+    }
+
     private fun manager(
         store: MealQueueStore,
         remote: FakeRemote,
@@ -209,6 +225,8 @@ private class FakeScheduler : MealSyncScheduler {
     override fun schedule(userId: String) {
         users += userId
     }
+
+    override fun cancel(userId: String) = Unit
 }
 
 private class FakeClock(var value: Long) : SyncTimeSource {

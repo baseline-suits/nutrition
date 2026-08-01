@@ -10,11 +10,17 @@ import java.net.URL
 
 class ApiException(val status: Int, val code: String) : Exception(code)
 
+internal val ApiJson = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+    encodeDefaults = true
+}
+
 class ApiClient(
     @PublishedApi internal val baseUrl: () -> String,
     @PublishedApi internal val sessionStore: SecureSessionStore,
 ) {
-    val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    val json = ApiJson
 
     inline fun <reified Request : Any, reified Response> request(
         path: String,
@@ -45,7 +51,7 @@ class ApiClient(
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
         val content = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         if (status !in 200..299) {
-            if (status == 401 && authenticated) sessionStore.clear()
+            if (status == 401 && authenticated) sessionStore.clearPreservingAccountDeletion()
             val code = runCatching {
                 (json.parseToJsonElement(content).jsonObject["detail"] as? JsonObject)
                     ?.get("code")?.toString()?.trim('"')
@@ -85,7 +91,7 @@ class ApiClient(
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
         val content = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         if (status !in 200..299) {
-            if (status == 401) sessionStore.clear()
+            if (status == 401) sessionStore.clearPreservingAccountDeletion()
             val code = runCatching {
                 (json.parseToJsonElement(content).jsonObject["detail"] as? JsonObject)
                     ?.get("code")?.toString()?.trim('"')

@@ -254,4 +254,21 @@
     <string name="apply_my_version">Применить мою версию</string>
     <string name="sync_error_code">Техническая причина: %1$s</string>
     <string name="sync_queue_full">Офлайн-очередь заполнена. Синхронизируйте или отмените неудачные изменения.</string>
+    <string name="account_and_privacy">Аккаунт и конфиденциальность</string>
+    <string name="account_delete_summary">Безвозвратно удалить аккаунт и все личные данные о питании.</string>
+    <string name="delete_account">Удалить аккаунт</string>
+    <string name="delete_account_title">Безвозвратно удалить аккаунт?</string>
+    <string name="delete_account_details">Профиль, цели, приёмы пищи, фотографии, избранное, черновики, сессии и данные синхронизации будут удалены. Это действие нельзя отменить.</string>
+    <string name="delete_account_backup_notice">Зашифрованные резервные копии технически могут храниться до 30 дней. Запись об удалении не позволит восстановленному аккаунту снова стать активным.</string>
+    <string name="delete_account_confirmation">Я понимаю, что все данные будут удалены безвозвратно.</string>
+    <string name="account_delete_password_error">Неверный пароль.</string>
+    <string name="account_delete_failed">Не удалось безопасно принять удаление аккаунта. Повторите попытку.</string>
+    <string name="account_deletion_received_title">Удаление аккаунта подтверждено</string>
+    <string name="account_deletion_completed">Аккаунт и его активные данные удалены.</string>
+    <string name="account_deletion_accepted">Аккаунт заблокирован. Безопасное удаление из хранилища объектов принято к завершению.</string>
+    <string name="delete_photo">Удалить фото</string>
+    <string name="delete_photo_title">Безвозвратно удалить фото?</string>
+    <string name="delete_photo_text">Фотография для «%1$s» будет удалена. Сохранённые данные о приёме пищи останутся.</string>
+    <string name="photo_deleted">Фото удалено</string>
+    <string name="ok">ОК</string>
 </resources>

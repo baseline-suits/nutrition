@@ -1,4 +1,4 @@
-.PHONY: quality android-lint android-test android-build translations backend-test backend-run access-code
+.PHONY: quality android-lint android-test android-build translations backend-test backend-run access-code retry-deletions
 
 quality:
 	./scripts/quality-gate.sh
@@ -23,3 +23,6 @@ backend-run:
 
 access-code:
 	cd backend && python manage.py create-access-code --hours $${HOURS:-72}
+
+retry-deletions:
+	cd backend && python manage.py retry-deletions

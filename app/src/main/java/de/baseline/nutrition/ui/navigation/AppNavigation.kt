@@ -59,6 +59,7 @@ fun NutritionNavHost(
             else ProfileOnboardingScreen(
                 container.profileRepository,
                 container.onboardingDraftStore,
+                container.authRepository,
                 container.dispatchers.io,
                 onSessionChanged,
             )

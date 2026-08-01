@@ -23,6 +23,22 @@ class SecureSessionStore(context: Context) {
         writeSecureString("user_id", userId)
     }
 
+    fun markAccountDeletion(userId: String) {
+        writeSecureString("account_deletion_user_id", userId)
+    }
+
+    fun readAccountDeletionUserId(): String? = readSecureString("account_deletion_user_id")
+
+    fun clearAccountDeletionMarker() {
+        removeSecureString("account_deletion_user_id")
+    }
+
+    fun clearPreservingAccountDeletion() {
+        val deletionUserId = readAccountDeletionUserId()
+        preferences.edit().clear().commit()
+        deletionUserId?.let { writeSecureString("account_deletion_user_id", it) }
+    }
+
     fun readSecureString(name: String): String? {
         val encrypted = preferences.getString(name, null) ?: return null
         return runCatching {

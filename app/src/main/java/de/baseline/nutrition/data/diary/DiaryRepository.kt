@@ -73,6 +73,7 @@ data class MealDto(
     @SerialName("provenance_source") val provenanceSource: String? = null,
     @SerialName("external_reference") val externalReference: String? = null,
     @SerialName("attachment_id") val attachmentId: String? = null,
+    @SerialName("photo_deleted") val photoDeleted: Boolean = false,
     val version: Int,
     @SerialName("updated_at") val updatedAt: String,
 )
@@ -334,6 +335,14 @@ class DiaryRepository(
         manager.sync(force = true)
     }
 
+    suspend fun deletePhoto(attachmentId: String) {
+        api.request<Unit, Unit>(
+            "/v1/uploads/$attachmentId",
+            "DELETE",
+            authenticated = true,
+        )
+    }
+
     suspend fun duplicate(mealId: String): MealDto {
         val manager = mealSyncManager
             ?: return api.request(
@@ -500,6 +509,11 @@ class DiaryRepository(
 
     suspend fun applyMine(operationId: String): SyncRunResult =
         mealSyncManager?.applyMine(operationId) ?: SyncRunResult(false, false)
+
+    suspend fun clearLocalData(userId: String) {
+        mealSyncManager?.clearUserData(userId)
+        historyCache.keys.removeAll { it.startsWith("$userId:") }
+    }
 
     override suspend fun history(days: Int): HistoryLoad {
         require(days in 1..100)

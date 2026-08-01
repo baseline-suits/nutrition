@@ -485,6 +485,10 @@ class MealSyncManager(
         )
     }
 
+    suspend fun clearUserData(userId: String) = mutex.withLock {
+        store.clear(userId)
+    }
+
     private fun complete(
         snapshot: MealSyncSnapshot,
         operation: QueuedMealOperation,
@@ -558,10 +562,12 @@ class MealSyncManager(
                     MealOperationType.Create, MealOperationType.Update -> {
                         val payload = operation.payload ?: return@forEach
                         val baseVersion = meals[operation.resourceId]?.version ?: payload.version ?: 0
+                        val photoDeleted = meals[operation.resourceId]?.photoDeleted ?: false
                         meals[operation.resourceId] = payload.asMealDto(
                             id = operation.resourceId,
                             version = baseVersion,
                             updatedAt = operation.updatedAt,
+                            photoDeleted = photoDeleted,
                         )
                     }
                     MealOperationType.Delete -> meals.remove(operation.resourceId)
@@ -663,7 +669,12 @@ class MealSyncManager(
     }
 }
 
-fun MealPayload.asMealDto(id: String, version: Int, updatedAt: Long): MealDto = MealDto(
+fun MealPayload.asMealDto(
+    id: String,
+    version: Int,
+    updatedAt: Long,
+    photoDeleted: Boolean = false,
+): MealDto = MealDto(
     id = id,
     clientId = clientId,
     localDay = localDay,
@@ -678,6 +689,7 @@ fun MealPayload.asMealDto(id: String, version: Int, updatedAt: Long): MealDto = 
     provenanceSource = provenanceSource,
     externalReference = externalReference,
     attachmentId = attachmentId,
+    photoDeleted = photoDeleted,
     version = version,
     updatedAt = Instant.ofEpochMilli(updatedAt).toString(),
 )

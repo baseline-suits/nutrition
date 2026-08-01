@@ -214,6 +214,10 @@ class DiaryViewModel(
 
     fun delete(meal: MealDto) = mutateAndRefresh { repository.delete(meal.id) }
 
+    fun deletePhoto(meal: MealDto) = mutateAndRefresh {
+        meal.attachmentId?.let { repository.deletePhoto(it) }
+    }
+
     fun duplicate(meal: MealDto) = mutateAndRefresh { repository.duplicate(meal.id) }
 
     fun toggleFavorite(meal: MealDto) {

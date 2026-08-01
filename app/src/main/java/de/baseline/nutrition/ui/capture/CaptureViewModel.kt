@@ -287,6 +287,7 @@ fun AnalysisDraftDto.toMealEditor(
     },
     captureMethod = captureMethod,
     provenanceSource = "ai_estimate",
+    externalReference = "analysis:$id",
     attachmentId = attachmentId,
     analysisWarnings = meal.warnings,
     dirty = false,

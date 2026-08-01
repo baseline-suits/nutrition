@@ -6,7 +6,16 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from baseline_api import main
-from baseline_api.main import app, cleanup_expired_uploads, db, iso, migrate, now, uid
+from baseline_api.main import (
+    app,
+    cleanup_expired_uploads,
+    db,
+    iso,
+    migrate,
+    now,
+    retry_deletion_jobs,
+    uid,
+)
 
 
 def register(client: TestClient, username: str, code: str) -> str:
@@ -159,11 +168,23 @@ def test_private_upload_analysis_binding_and_deletion(tmp_path, monkeypatch):
         )
         loaded = client.get(f"/v1/meals/{saved.json()['id']}", headers=auth(first))
         assert loaded.json()["attachment_id"] is None
+        assert loaded.json()["photo_deleted"] is True
 
     with db() as connection:
-        row = connection.execute("SELECT object_key,status FROM photo_uploads").fetchone()
-        assert "photo-first" not in row["object_key"]
-        assert row["status"] == "deleted"
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM photo_uploads WHERE id=?",
+                (upload_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM deletion_jobs WHERE kind='photo' AND target_id=?",
+                (upload_id,),
+            ).fetchone()["status"]
+            == "completed"
+        )
 
 
 def test_mime_spoofing_and_expired_upload_cleanup(tmp_path, monkeypatch):
@@ -204,9 +225,62 @@ def test_mime_spoofing_and_expired_upload_cleanup(tmp_path, monkeypatch):
 
     assert cleanup_expired_uploads() == 2
     with db() as connection:
-        statuses = {
-            row["id"]: row["status"]
-            for row in connection.execute("SELECT id,status FROM photo_uploads")
+        assert connection.execute("SELECT COUNT(*) FROM photo_uploads").fetchone()[0] == 0
+        jobs = {
+            row["target_id"]: row["status"]
+            for row in connection.execute(
+                "SELECT target_id,status FROM deletion_jobs WHERE kind='photo'"
+            )
         }
-    assert statuses[upload_id] == "deleted"
-    assert statuses[stale["id"]] == "deleted"
+    assert jobs[upload_id] == "completed"
+    assert jobs[stale["id"]] == "completed"
+
+
+def test_expired_upload_cleanup_retries_failed_object_deletion(tmp_path, monkeypatch):
+    monkeypatch.setattr(main.settings, "database", tmp_path / "cleanup-retry.db")
+    monkeypatch.setattr(main.settings, "object_store", tmp_path / "objects")
+    with TestClient(app) as client:
+        token = register(client, "photo-cleanup-retry", "photo-cleanup-retry-code")
+        upload = client.post(
+            "/v1/uploads",
+            json={"media_type": "image/jpeg", "size_bytes": 20},
+            headers=auth(token, "cleanup-retry-photo-1"),
+        ).json()
+        with db() as connection:
+            connection.execute(
+                "UPDATE photo_uploads SET expires_at=? WHERE id=?",
+                (iso(now() - timedelta(seconds=1)), upload["id"]),
+            )
+            connection.commit()
+
+    original_remove = main.remove_upload_files
+
+    def fail_removal(_object_key):
+        raise OSError("object store temporarily unavailable")
+
+    monkeypatch.setattr(main, "remove_upload_files", fail_removal)
+    assert cleanup_expired_uploads() == 1
+    with db() as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM photo_uploads WHERE id=?", (upload["id"],)
+            ).fetchone()["status"]
+            == "deleted"
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM deletion_jobs WHERE kind='photo' AND target_id=?",
+                (upload["id"],),
+            ).fetchone()["status"]
+            == "failed_retryable"
+        )
+
+    monkeypatch.setattr(main, "remove_upload_files", original_remove)
+    assert retry_deletion_jobs(force=True) == {"attempted": 1, "completed": 1}
+    with db() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM photo_uploads WHERE id=?", (upload["id"],)
+            ).fetchone()[0]
+            == 0
+        )
