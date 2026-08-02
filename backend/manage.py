@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import secrets
 from datetime import timedelta
 
-from baseline_api.main import db, digest, iso, migrate, now, uid
+from baseline_api.main import (
+    analysis_telemetry_summary,
+    cleanup_expired_uploads,
+    db,
+    digest,
+    iso,
+    migrate,
+    now,
+    retry_deletion_jobs,
+    uid,
+)
 
 
 def main() -> None:
@@ -11,6 +22,10 @@ def main() -> None:
     subcommands = parser.add_subparsers(dest="command", required=True)
     invite = subcommands.add_parser("create-access-code")
     invite.add_argument("--hours", type=int, default=72)
+    subcommands.add_parser("cleanup-uploads")
+    subcommands.add_parser("retry-deletions")
+    report = subcommands.add_parser("analysis-report")
+    report.add_argument("--days", type=int, default=7)
     args = parser.parse_args()
     if args.command == "create-access-code":
         if not 1 <= args.hours <= 8760:
@@ -24,8 +39,15 @@ def main() -> None:
             )
             connection.commit()
         print(code)
+    elif args.command == "cleanup-uploads":
+        print(cleanup_expired_uploads())
+    elif args.command == "retry-deletions":
+        migrate()
+        print(json.dumps(retry_deletion_jobs(force=True), indent=2))
+    elif args.command == "analysis-report":
+        migrate()
+        print(json.dumps(analysis_telemetry_summary(args.days), indent=2))
 
 
 if __name__ == "__main__":
     main()
-

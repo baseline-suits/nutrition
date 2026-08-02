@@ -1,0 +1,28 @@
+{
+  "code": "4008400214504",
+  "product_name": "Test-Haferflocken",
+  "brands": "Fixture",
+  "quantity": "500 g",
+  "serving_size": "40 g",
+  "serving_quantity": 40,
+  "serving_quantity_unit": "g",
+  "product_quantity_unit": "g",
+  "nutrition_data_per": "100g",
+  "lang": "de",
+  "countries_tags": [
+    "en:germany"
+  ],
+  "image_front_small_url": "https://images.openfoodfacts.org/images/products/400/840/021/4504/front_de.3.200.jpg",
+  "nutriments": {
+    "energy-kcal_100g": 370.5,
+    "energy-kcal_unit": "kcal",
+    "proteins_100g": 13.2,
+    "proteins_unit": "g",
+    "carbohydrates_100g": 58.7,
+    "carbohydrates_unit": "g",
+    "fat_100g": 7.1,
+    "fat_unit": "g",
+    "fiber_100g": 10.1,
+    "fiber_unit": "g"
+  }
+}

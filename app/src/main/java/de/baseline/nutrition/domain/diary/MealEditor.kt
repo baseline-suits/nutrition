@@ -19,7 +19,9 @@ data class NutrientFields(
     val protein: String = "",
     val carbohydrates: String = "",
     val fat: String = "",
+    val additional: List<NutrientDto> = emptyList(),
     val sources: Map<String, String> = emptyMap(),
+    val locks: Map<String, Boolean> = emptyMap(),
     val originalValues: Map<String, String> = emptyMap(),
 ) {
     fun value(key: String): String = when (key) {
@@ -52,14 +54,9 @@ data class IngredientDraft(
             return copy(amount = newAmount)
         }
         val factor = new.divide(old, 12, RoundingMode.HALF_UP)
-        fun scaled(value: String): String = parseLocalizedDecimal(value)?.multiply(factor)
-            ?.setScale(6, RoundingMode.HALF_UP)?.stripTrailingZeros()?.toPlainString().orEmpty()
         return copy(
             amount = newAmount,
-            nutrients = nutrients.copy(
-                energy = scaled(nutrients.energy), protein = scaled(nutrients.protein),
-                carbohydrates = scaled(nutrients.carbohydrates), fat = scaled(nutrients.fat),
-            ),
+            nutrients = nutrients.scaledBy(factor),
         )
     }
 }
@@ -109,6 +106,11 @@ data class MealEditorDraft(
     val note: String = "",
     val nutrients: NutrientFields = NutrientFields(),
     val ingredients: List<IngredientDraft> = emptyList(),
+    val captureMethod: String = "manual",
+    val provenanceSource: String = "user",
+    val externalReference: String? = null,
+    val attachmentId: String? = null,
+    val analysisWarnings: List<String> = emptyList(),
     val dirty: Boolean = false,
 ) {
     fun totals(): Map<String, BigDecimal?> = nutrientKeys.associateWith { key ->
@@ -117,6 +119,22 @@ data class MealEditorDraft(
             ingredients.forEach { add(it.nutrients.value(key)) }
         }.mapNotNull(::parseLocalizedDecimal)
         values.takeIf { it.isNotEmpty() }?.fold(BigDecimal.ZERO, BigDecimal::add)
+    }
+
+    fun scaled(factorText: String): MealEditorDraft {
+        val factor = requireNotNull(parseLocalizedDecimal(factorText))
+        require(factor > BigDecimal.ZERO)
+        return copy(
+            nutrients = nutrients.scaledBy(factor),
+            ingredients = ingredients.map { ingredient ->
+                val amount = requireNotNull(parseLocalizedDecimal(ingredient.amount))
+                require(amount > BigDecimal.ZERO)
+                ingredient.copy(
+                    amount = (amount * factor).canonical(),
+                    nutrients = ingredient.nutrients.scaledBy(factor),
+                )
+            },
+        )
     }
 
     fun toPayload(zoneId: ZoneId = ZoneId.systemDefault()): MealPayload {
@@ -146,6 +164,10 @@ data class MealEditorDraft(
             note = note.trim().ifBlank { null },
             ingredients = ingredientDtos,
             nutrients = directNutrients,
+            captureMethod = captureMethod,
+            provenanceSource = provenanceSource,
+            externalReference = externalReference,
+            attachmentId = attachmentId,
             version = version,
         )
     }
@@ -173,9 +195,39 @@ data class MealEditorDraft(
                         nutrients = ingredient.nutrients.toFields(),
                     )
                 },
+                captureMethod = meal.captureMethod,
+                provenanceSource = meal.provenanceSource ?: "user",
+                externalReference = meal.externalReference,
+                attachmentId = meal.attachmentId,
             )
         }
     }
+}
+
+fun MealPayload.toEditorDraft(): MealEditorDraft {
+    val eaten = java.time.OffsetDateTime.parse(eatenAt)
+    return MealEditorDraft(
+        clientId = clientId,
+        name = name,
+        mealType = mealType,
+        day = localDay,
+        time = eaten.toLocalTime().withSecond(0).withNano(0).toString(),
+        note = note.orEmpty(),
+        nutrients = nutrients.toFields(),
+        ingredients = ingredients.map { ingredient ->
+            IngredientDraft(
+                name = ingredient.name,
+                preparation = ingredient.preparation.orEmpty(),
+                amount = ingredient.amount,
+                unit = ingredient.unit,
+                nutrients = ingredient.nutrients.toFields(),
+            )
+        },
+        captureMethod = captureMethod,
+        provenanceSource = provenanceSource ?: "user",
+        externalReference = externalReference,
+        attachmentId = null,
+    )
 }
 
 fun PrivateFoodDto.toIngredient(amountText: String = defaultAmount): IngredientDraft {
@@ -216,24 +268,61 @@ fun parseLocalizedDecimal(input: String): BigDecimal? {
 
 private val nutrientKeys = listOf("energy", "protein", "carbohydrates", "fat")
 
-private fun NutrientFields.toDtos(): List<NutrientDto> = nutrientKeys.mapNotNull { key ->
-    val value = parseLocalizedDecimal(value(key)) ?: return@mapNotNull null
-    require(value >= BigDecimal.ZERO) { key }
-    NutrientDto(
-        key = key,
-        value = value.canonical(),
-        unit = if (key == "energy") "kcal" else "g",
-        source = if (originalValues[key]?.let(::parseLocalizedDecimal) == value) {
-            sources[key] ?: "user"
-        } else "user",
-        locked = true,
+private fun NutrientFields.scaledBy(factor: BigDecimal): NutrientFields {
+    fun scaled(value: String): String = parseLocalizedDecimal(value)?.multiply(factor)
+        ?.setScale(6, RoundingMode.HALF_UP)?.stripTrailingZeros()?.toPlainString().orEmpty()
+    return copy(
+        energy = scaled(energy),
+        protein = scaled(protein),
+        carbohydrates = scaled(carbohydrates),
+        fat = scaled(fat),
+        additional = additional.map { nutrient ->
+            nutrient.copy(value = scaled(nutrient.value))
+        },
+        originalValues = originalValues.mapValues { (_, value) -> scaled(value) },
     )
+}
+
+private fun NutrientFields.toDtos(): List<NutrientDto> {
+    val core = nutrientKeys.mapNotNull { key ->
+        val value = parseLocalizedDecimal(value(key)) ?: return@mapNotNull null
+        require(value >= BigDecimal.ZERO) { key }
+        NutrientDto(
+            key = key,
+            value = value.canonical(),
+            unit = if (key == "energy") "kcal" else "g",
+            source = if (originalValues[key]?.let(::parseLocalizedDecimal) == value) {
+                sources[key] ?: "user"
+            } else {
+                "user"
+            },
+            locked = if (originalValues[key]?.let(::parseLocalizedDecimal) == value) {
+                locks[key] ?: true
+            } else {
+                true
+            },
+        )
+    }
+    val preserved = additional.filterNot { it.key in nutrientKeys }.map { nutrient ->
+        val value = requireNotNull(parseLocalizedDecimal(nutrient.value))
+        require(value >= BigDecimal.ZERO) { nutrient.key }
+        nutrient.copy(value = value.canonical())
+    }
+    return core + preserved
 }
 
 private fun List<NutrientDto>.toFields(): NutrientFields {
     val values = filter { it.key in nutrientKeys }.associate { it.key to it.value }
     val sources = filter { it.key in nutrientKeys }.associate { it.key to it.source }
-    return fold(NutrientFields(sources = sources, originalValues = values)) { fields, nutrient ->
+    val locks = filter { it.key in nutrientKeys }.associate { it.key to it.locked }
+    return fold(
+        NutrientFields(
+            additional = filterNot { it.key in nutrientKeys },
+            sources = sources,
+            locks = locks,
+            originalValues = values,
+        ),
+    ) { fields, nutrient ->
         if (nutrient.key in nutrientKeys) fields.with(nutrient.key, nutrient.value) else fields
     }
 }

@@ -1,5 +1,5 @@
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
@@ -11,7 +11,12 @@ def create_code(value: str) -> None:
     with db() as connection:
         connection.execute(
             "INSERT INTO access_codes VALUES (?,?,?,?,NULL,NULL,NULL)",
-            (uid(), hashlib.sha256(value.encode()).hexdigest(), iso(now()), iso(now() + timedelta(hours=1))),
+            (
+                uid(),
+                hashlib.sha256(value.encode()).hexdigest(),
+                iso(now()),
+                iso(now() + timedelta(hours=1)),
+            ),
         )
         connection.commit()
 
@@ -40,20 +45,23 @@ def meal(client_id: str = "phone-1") -> dict:
         "meal_type": "breakfast",
         "name": "Joghurt",
         "capture_method": "manual",
-        "ingredients": [{
-            "original_name": "Joghurt",
-            "amount": "200",
-            "unit": "g",
-            "nutrients": [
-                {"key": "energy", "value": "120.50", "unit": "kcal", "basis": "portion"},
-                {"key": "protein", "value": "10.25", "unit": "g", "basis": "portion"},
-            ],
-        }],
+        "ingredients": [
+            {
+                "original_name": "Joghurt",
+                "amount": "200",
+                "unit": "g",
+                "nutrients": [
+                    {"key": "energy", "value": "120.50", "unit": "kcal", "basis": "portion"},
+                    {"key": "protein", "value": "10.25", "unit": "g", "basis": "portion"},
+                ],
+            }
+        ],
     }
 
 
 def test_auth_isolation_idempotency_and_summary(tmp_path, monkeypatch):
     from baseline_api import main
+
     monkeypatch.setattr(main.settings, "database", tmp_path / "test.db")
     create_code("first-code-value-123456")
     create_code("second-code-value-123456")
@@ -92,6 +100,7 @@ def test_auth_isolation_idempotency_and_summary(tmp_path, monkeypatch):
 
 def test_access_code_is_one_time(tmp_path, monkeypatch):
     from baseline_api import main
+
     monkeypatch.setattr(main.settings, "database", tmp_path / "test.db")
     create_code("one-time-code-value-123456")
     with TestClient(app) as client:
@@ -109,6 +118,7 @@ def test_access_code_is_one_time(tmp_path, monkeypatch):
 
 def test_quick_manual_entry_and_private_food_isolation(tmp_path, monkeypatch):
     from baseline_api import main
+
     monkeypatch.setattr(main.settings, "database", tmp_path / "test.db")
     create_code("manual-first-code-123456")
     create_code("manual-second-code-123456")
@@ -134,9 +144,7 @@ def test_quick_manual_entry_and_private_food_isolation(tmp_path, monkeypatch):
             "default_amount": "100",
             "unit": "g",
             "basis": "100g",
-            "nutrients": [
-                {"key": "energy", "value": "370,5", "unit": "kcal", "basis": "100g"}
-            ],
+            "nutrients": [{"key": "energy", "value": "370,5", "unit": "kcal", "basis": "100g"}],
         }
         food = client.post("/v1/private-foods", json=template, headers=first_headers)
         assert food.status_code == 201, food.text
@@ -147,9 +155,87 @@ def test_quick_manual_entry_and_private_food_isolation(tmp_path, monkeypatch):
 
         update = dict(template)
         update["version"] = food.json()["version"]
-        update["nutrients"] = [
-            {"key": "energy", "value": "380", "unit": "kcal", "basis": "100g"}
-        ]
-        assert client.put(f"/v1/private-foods/{food_id}", json=update, headers=first_headers).status_code == 200
+        update["nutrients"] = [{"key": "energy", "value": "380", "unit": "kcal", "basis": "100g"}]
+        assert (
+            client.put(
+                f"/v1/private-foods/{food_id}", json=update, headers=first_headers
+            ).status_code
+            == 200
+        )
         stored_meal = client.get(f"/v1/meals/{created.json()['id']}", headers=first_headers).json()
         assert stored_meal["nutrients"][0]["value"] == "450.5"
+
+
+def test_meal_mutations_are_idempotent_before_and_after_processing(tmp_path, monkeypatch):
+    from baseline_api import main
+
+    monkeypatch.setattr(main.settings, "database", tmp_path / "mutation-idempotency.db")
+    create_code("mutation-code-value-123456")
+    with TestClient(app) as client:
+        token = register(client, "mutation-user", "mutation-code-value-123456")
+        headers = {"Authorization": f"Bearer {token}"}
+        create_headers = headers | {"Idempotency-Key": "create-stable-key"}
+        created = client.post("/v1/meals", json=meal("ignored-client"), headers=create_headers)
+        repeated_create = client.post(
+            "/v1/meals",
+            json=meal("another-client"),
+            headers=create_headers,
+        )
+        assert created.status_code == 201
+        assert repeated_create.status_code == 201
+        assert repeated_create.json() == created.json()
+
+        conflicting_create = meal("ignored")
+        conflicting_create["name"] = "Andere Mahlzeit"
+        conflict = client.post("/v1/meals", json=conflicting_create, headers=create_headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+
+        update = meal(created.json()["client_id"])
+        update["version"] = created.json()["version"]
+        update["name"] = "Bearbeitet"
+        update_headers = headers | {"Idempotency-Key": "update-stable-key"}
+        first_update = client.put(
+            f"/v1/meals/{created.json()['id']}",
+            json=update,
+            headers=update_headers,
+        )
+        repeated_update = client.put(
+            f"/v1/meals/{created.json()['id']}",
+            json=update,
+            headers=update_headers,
+        )
+        assert first_update.status_code == 200
+        assert repeated_update.status_code == 200
+        assert repeated_update.json() == first_update.json()
+        assert repeated_update.json()["version"] == 2
+
+        changed_update = dict(update)
+        changed_update["name"] = "Andere Wiederholung"
+        conflict = client.put(
+            f"/v1/meals/{created.json()['id']}",
+            json=changed_update,
+            headers=update_headers,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+
+        second = client.post("/v1/meals", json=meal("delete-second"), headers=headers).json()
+        delete_headers = headers | {"Idempotency-Key": "delete-stable-key"}
+        assert (
+            client.delete(
+                f"/v1/meals/{created.json()['id']}",
+                headers=delete_headers,
+            ).status_code
+            == 204
+        )
+        assert (
+            client.delete(
+                f"/v1/meals/{created.json()['id']}",
+                headers=delete_headers,
+            ).status_code
+            == 204
+        )
+        conflict = client.delete(f"/v1/meals/{second['id']}", headers=delete_headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"

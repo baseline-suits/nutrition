@@ -2,8 +2,11 @@ package de.baseline.nutrition.ui.screen
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,7 +62,10 @@ fun AuthScreen(
     val locale = LocalConfiguration.current.locales[0].language.let { if (it == "ru") "ru" else "de" }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(BaselineSpacing.large),
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .padding(BaselineSpacing.large),
         verticalArrangement = Arrangement.spacedBy(BaselineSpacing.medium),
     ) {
         Text(stringResource(if (registration) R.string.register_title else R.string.login_title))

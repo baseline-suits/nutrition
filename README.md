@@ -10,6 +10,7 @@ Konten, Profile und Mahlzeiten.
 - JDK 17
 - Android SDK 35
 - Android Build Tools 35.0.0
+- Python 3.13
 
 `ANDROID_HOME` muss auf das installierte Android SDK zeigen. Weitere globale Tools sind nicht erforderlich.
 
@@ -40,6 +41,24 @@ BASELINE_BETA_API_URL=https://beta.example.invalid/ ./gradlew :app:assembleInter
 
 Die URLs sind Konfiguration, keine Geheimnisse. Tokens, Zugangscodes und API-Schlüssel dürfen weder als Gradle-Property noch als `BuildConfig`-Wert hinterlegt werden.
 
+### Interne Beta installieren oder aktualisieren
+
+Nach dem Quality-Gate wird die interne APK mit einem eindeutigen Commitnamen
+gepackt und ihre Prüfsumme dokumentiert:
+
+```bash
+./gradlew --no-daemon :app:assembleInternalBeta
+ANDROID_HOME="$ANDROID_HOME" ./scripts/check-beta-apk.sh app/build/outputs/apk/internalBeta/app-internalBeta.apk
+./scripts/package-beta-apk.sh
+sha256sum artifacts/baseline-nutrition-*.apk
+adb install -r app/build/outputs/apk/internalBeta/app-internalBeta.apk
+```
+
+Das `-r` aktualisiert eine vorhandene interne Installation. Für einen Rollback
+wird die vorherige APK mit derselben `adb install -r`-Anweisung installiert;
+Backend-Migrationen werden nicht rückwärts ausgeführt, sondern über ein
+versioniertes Datenbank-Backup wiederhergestellt.
+
 ## Backend lokal starten
 
 ```bash
@@ -54,10 +73,22 @@ Die API liegt unter `http://127.0.0.1:8000`, die OpenAPI-Dokumentation unter
 Deployments kann `BASELINE_DATABASE` auf einen anderen Pfad gesetzt werden.
 Der Zugangscode wird nur beim Erzeugen im Klartext ausgegeben.
 
+Essensfotos liegen ausschließlich im privaten, nicht statisch ausgelieferten
+Objektspeicher. Der lokale Standardpfad ist `backend/private_objects`; in
+Deploymentumgebungen wird er mit `BASELINE_OBJECT_STORE` gesetzt. Der
+Webserverprozess benötigt dort Lese-/Schreibrechte, der Pfad darf nicht als
+öffentliches Verzeichnis konfiguriert werden. Temporäre und fehlgeschlagene
+Uploads werden regelmäßig entfernt:
+
+```bash
+cd backend
+python manage.py cleanup-uploads
+```
+
 Backendtests:
 
 ```bash
-PYTHONPATH=backend pytest -q backend/tests
+make backend-test
 ```
 
 ## Qualitätsprüfungen
@@ -69,4 +100,4 @@ Die lokal verfügbaren Befehle entsprechen den Pflichtschritten der CI:
 ./scripts/check-translations.sh
 ```
 
-Eine Übersicht der Gates, Artefakte und noch blockierten Backend-Prüfungen steht in [docs/quality-gates.md](docs/quality-gates.md).
+Eine Übersicht der Gates und Artefakte steht in [docs/quality-gates.md](docs/quality-gates.md).

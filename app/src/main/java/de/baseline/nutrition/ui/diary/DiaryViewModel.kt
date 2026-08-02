@@ -6,15 +6,21 @@ import androidx.lifecycle.viewModelScope
 import de.baseline.nutrition.data.diary.DaySummaryDto
 import de.baseline.nutrition.data.diary.DiaryRepository
 import de.baseline.nutrition.data.diary.DiaryTargets
+import de.baseline.nutrition.data.diary.FavoriteDto
 import de.baseline.nutrition.data.diary.MealDto
 import de.baseline.nutrition.data.diary.PrivateFoodDto
+import de.baseline.nutrition.data.diary.toDiaryTargets
 import de.baseline.nutrition.data.network.ApiException
+import de.baseline.nutrition.data.sync.MealQueueFullException
+import de.baseline.nutrition.data.sync.MealSyncUiState
 import de.baseline.nutrition.domain.diary.IngredientDraft
 import de.baseline.nutrition.domain.diary.MealEditorDraft
 import de.baseline.nutrition.domain.diary.PrivateFoodEditorDraft
 import de.baseline.nutrition.domain.diary.toIngredient
+import de.baseline.nutrition.domain.diary.toEditorDraft
 import java.time.LocalDate
-import java.time.OffsetDateTime
+import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,7 +29,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class DiaryError { Network, Validation, Conflict }
+enum class DiaryError { Network, Validation, Conflict, QueueFull, Session }
 
 data class DiaryUiState(
     val selectedDay: LocalDate = LocalDate.now(),
@@ -31,7 +37,10 @@ data class DiaryUiState(
     val summary: DaySummaryDto? = null,
     val targets: DiaryTargets? = null,
     val privateFoods: List<PrivateFoodDto> = emptyList(),
+    val favorites: List<FavoriteDto> = emptyList(),
+    val sync: MealSyncUiState = MealSyncUiState(),
     val editor: MealEditorDraft? = null,
+    val favoriteEditor: FavoriteDto? = null,
     val templateEditor: PrivateFoodEditorDraft? = null,
     val loading: Boolean = true,
     val saving: Boolean = false,
@@ -44,6 +53,14 @@ class DiaryViewModel(
     private val repository: DiaryRepository,
     private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
+    private data class LoadedDiary(
+        val meals: List<MealDto>,
+        val summary: DaySummaryDto,
+        val targets: DiaryTargets,
+        val favorites: List<FavoriteDto>,
+        val sync: MealSyncUiState,
+    )
+
     private val mutableState = MutableStateFlow(DiaryUiState())
     val state: StateFlow<DiaryUiState> = mutableState.asStateFlow()
 
@@ -55,14 +72,32 @@ class DiaryViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(ioDispatcher) {
-                    Triple(repository.meals(day), repository.summary(day), repository.targets())
+                    LoadedDiary(
+                        meals = repository.meals(day),
+                        summary = repository.summary(day),
+                        targets = repository.targets(),
+                        favorites = repository.favorites(),
+                        sync = repository.syncUiState(),
+                    )
                 }
-            }.onSuccess { (meals, summary, targets) ->
-                mutableState.update {
-                    it.copy(meals = meals, summary = summary, targets = targets, loading = false,
-                        lastSync = OffsetDateTime.now().toLocalTime().withNano(0).toString())
+            }.onSuccess { loaded ->
+                mutableState.update { state ->
+                    val targets = loaded.summary.targets?.toDiaryTargets()
+                        ?: loaded.targets.takeIf { state.selectedDay >= LocalDate.now() }
+                    val lastSuccess = loaded.sync.overview.lastSuccessAt?.let {
+                        Instant.ofEpochMilli(it)
+                            .atZone(ZoneId.systemDefault())
+                            .toLocalTime()
+                            .withNano(0)
+                            .toString()
+                    }
+                    state.copy(meals = loaded.meals, summary = loaded.summary, targets = targets,
+                        favorites = loaded.favorites, sync = loaded.sync, loading = false,
+                        lastSync = lastSuccess)
                 }
-            }.onFailure { mutableState.update { it.copy(loading = false, error = DiaryError.Network) } }
+            }.onFailure { error ->
+                mutableState.update { it.copy(loading = false, error = error.toDiaryError()) }
+            }
         }
     }
 
@@ -73,13 +108,39 @@ class DiaryViewModel(
 
     fun newManualEntry() {
         mutableState.update {
-            it.copy(editor = MealEditorDraft(day = it.selectedDay.toString()), error = null)
+            it.copy(
+                editor = MealEditorDraft(day = it.selectedDay.toString()),
+                favoriteEditor = null,
+                error = null,
+            )
+        }
+        loadPrivateFoods()
+    }
+
+    fun openDraft(editor: MealEditorDraft) {
+        mutableState.update { it.copy(editor = editor, favoriteEditor = null, error = null) }
+        loadPrivateFoods()
+    }
+
+    fun openFavoriteTemplate(favorite: FavoriteDto) {
+        mutableState.update {
+            it.copy(
+                editor = favorite.meal.toEditorDraft(),
+                favoriteEditor = favorite,
+                error = null,
+            )
         }
         loadPrivateFoods()
     }
 
     fun edit(meal: MealDto) {
-        mutableState.update { it.copy(editor = MealEditorDraft.from(meal), error = null) }
+        mutableState.update {
+            it.copy(
+                editor = MealEditorDraft.from(meal),
+                favoriteEditor = null,
+                error = null,
+            )
+        }
         loadPrivateFoods()
     }
 
@@ -96,7 +157,13 @@ class DiaryViewModel(
     fun dismissDiscard() = mutableState.update { it.copy(confirmDiscard = false) }
 
     fun closeEditor() = mutableState.update {
-        it.copy(editor = null, templateEditor = null, confirmDiscard = false, error = null)
+        it.copy(
+            editor = null,
+            favoriteEditor = null,
+            templateEditor = null,
+            confirmDiscard = false,
+            error = null,
+        )
     }
 
     fun saveEditor() {
@@ -108,16 +175,38 @@ class DiaryViewModel(
         if (mutableState.value.saving) return
         mutableState.update { it.copy(saving = true, error = null) }
         viewModelScope.launch {
-            runCatching { withContext(ioDispatcher) { repository.save(payload, editor.mealId) } }
-                .onSuccess {
-                    mutableState.update { state -> state.copy(editor = null, saving = false) }
+            val favorite = mutableState.value.favoriteEditor
+            runCatching {
+                withContext(ioDispatcher) {
+                    if (favorite == null) {
+                        repository.save(payload, editor.mealId)
+                    } else {
+                        repository.updateFavorite(favorite.id, favorite.displayName, payload)
+                        null
+                    }
+                }
+            }
+                .onSuccess { saved ->
+                    mutableState.update { state ->
+                        val meals = if (favorite == null) {
+                            state.meals.filterNot {
+                                it.id == saved?.id || it.clientId == saved?.clientId
+                            } + listOfNotNull(saved)
+                        } else {
+                            state.meals
+                        }
+                        state.copy(
+                            meals = meals,
+                            editor = null,
+                            favoriteEditor = null,
+                            saving = false,
+                        )
+                    }
                     refresh()
                 }
                 .onFailure { error ->
                     mutableState.update {
-                        it.copy(saving = false, error = if (error is ApiException && error.status == 409) {
-                            DiaryError.Conflict
-                        } else DiaryError.Network)
+                        it.copy(saving = false, error = error.toDiaryError())
                     }
                 }
         }
@@ -125,7 +214,53 @@ class DiaryViewModel(
 
     fun delete(meal: MealDto) = mutateAndRefresh { repository.delete(meal.id) }
 
+    fun deletePhoto(meal: MealDto) = mutateAndRefresh {
+        meal.attachmentId?.let { repository.deletePhoto(it) }
+    }
+
     fun duplicate(meal: MealDto) = mutateAndRefresh { repository.duplicate(meal.id) }
+
+    fun toggleFavorite(meal: MealDto) {
+        val favorite = mutableState.value.favorites.firstOrNull { it.originalMealId == meal.id }
+        mutateAndRefresh {
+            if (favorite == null) repository.createFavorite(meal.id, meal.name)
+            else repository.deleteFavorite(favorite.id)
+        }
+    }
+
+    fun syncNow() = mutateAndRefresh {
+        repository.syncNow()
+    }
+
+    fun setBudgetMode(mode: String) {
+        if (mutableState.value.selectedDay != LocalDate.now()) return
+        mutateAndRefresh { repository.setBudgetMode(mode) }
+    }
+
+    fun retrySync(operationId: String) = mutateAndRefresh {
+        repository.retrySync(operationId)
+    }
+
+    fun discardSync(operationId: String) = mutateAndRefresh {
+        repository.discardSync(operationId)
+    }
+
+    fun keepServer(operationId: String) = mutateAndRefresh {
+        repository.keepServer(operationId)
+    }
+
+    fun applyMine(operationId: String) = mutateAndRefresh {
+        repository.applyMine(operationId)
+    }
+
+    fun scaleEditor(factor: String) {
+        val editor = mutableState.value.editor ?: return
+        val scaled = runCatching { editor.scaled(factor) }.getOrElse {
+            mutableState.update { it.copy(error = DiaryError.Validation) }
+            return
+        }
+        updateEditor(scaled)
+    }
 
     fun loadPrivateFoods() {
         viewModelScope.launch {
@@ -190,7 +325,9 @@ class DiaryViewModel(
         viewModelScope.launch {
             runCatching { withContext(ioDispatcher) { block() } }
                 .onSuccess { refresh() }
-                .onFailure { mutableState.update { it.copy(error = DiaryError.Network) } }
+                .onFailure { error ->
+                    mutableState.update { it.copy(error = error.toDiaryError()) }
+                }
         }
     }
 
@@ -210,4 +347,11 @@ class DiaryViewModel(
                     DiaryViewModel(repository, ioDispatcher) as T
             }
     }
+}
+
+private fun Throwable.toDiaryError(): DiaryError = when {
+    this is MealQueueFullException -> DiaryError.QueueFull
+    this is ApiException && status == 401 -> DiaryError.Session
+    this is ApiException && status == 409 -> DiaryError.Conflict
+    else -> DiaryError.Network
 }

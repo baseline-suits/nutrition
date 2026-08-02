@@ -9,4 +9,5 @@ artifacts/
 __pycache__/
 *.py[cod]
 *.db
+backend/private_objects/
 .venv/

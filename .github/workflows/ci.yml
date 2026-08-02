@@ -51,6 +51,9 @@ jobs:
       - name: Übersetzungen prüfen
         run: ./scripts/check-translations.sh
 
+      - name: Secrets prüfen
+        run: ./scripts/check-secrets.sh
+
       - name: Android-Lint
         run: ./gradlew --no-daemon :app:lintDebug
 
@@ -132,22 +135,8 @@ jobs:
     if: needs.repository-shape.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: baseline
-          POSTGRES_PASSWORD: baseline
-          POSTGRES_DB: baseline_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U baseline"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
-      DATABASE_URL: postgresql://baseline:baseline@localhost:5432/baseline_test
+      BASELINE_DATABASE: /tmp/baseline-ci.db
       EXTERNAL_SERVICES_MODE: fake
     steps:
       - name: Checkout
@@ -157,6 +146,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
 
       - name: Abhängigkeiten installieren
         run: make -C backend ci-install
@@ -184,6 +175,9 @@ jobs:
 
       - name: OpenAPI-Contract
         run: make -C backend ci-openapi
+
+      - name: KI-Contract-Evaluation
+        run: make -C backend ci-eval
 
       - name: Backend-Berichte hochladen
         if: always()
