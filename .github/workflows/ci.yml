@@ -75,7 +75,7 @@ jobs:
           echo "path=$artifact_path" >> "$GITHUB_OUTPUT"
 
       - name: APK hochladen
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: internal-beta-apk-${{ github.sha }}
           path: ${{ steps.package.outputs.path }}
@@ -83,7 +83,7 @@ jobs:
 
       - name: Test- und Lintberichte hochladen
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-reports-${{ github.sha }}
           path: |
@@ -120,7 +120,7 @@ jobs:
 
       - name: Instrumentierungsberichte hochladen
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-instrumented-reports-${{ github.sha }}
           path: |
@@ -181,7 +181,7 @@ jobs:
 
       - name: Backend-Berichte hochladen
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-reports-${{ github.sha }}
           path: |
