@@ -46,7 +46,7 @@ jobs:
           java-version: "17"
 
       - name: Gradle einrichten
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Übersetzungen prüfen
         run: ./scripts/check-translations.sh
@@ -108,7 +108,7 @@ jobs:
           java-version: "17"
 
       - name: Gradle einrichten
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Compose-Navigationstests
         uses: reactivecircus/android-emulator-runner@v2
