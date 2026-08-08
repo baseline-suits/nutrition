@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Baseline Nutrition deletion retries every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=baseline-nutrition-retry-deletions.service
+
+[Install]
+WantedBy=timers.target

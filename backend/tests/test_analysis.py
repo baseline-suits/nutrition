@@ -47,6 +47,25 @@ def headers(token: str, key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Idempotency-Key": key}
 
 
+def test_analysis_provider_schema_is_strict_and_has_no_optional_object_fields():
+    schema = main.analysis_response_schema()
+
+    def assert_strict(node):
+        if isinstance(node, list):
+            for item in node:
+                assert_strict(item)
+        elif isinstance(node, dict):
+            assert "default" not in node
+            if node.get("type") == "object":
+                properties = node["properties"]
+                assert node["additionalProperties"] is False
+                assert set(node["required"]) == set(properties)
+            for value in node.values():
+                assert_strict(value)
+
+    assert_strict(schema)
+
+
 def valid_model_result() -> dict:
     return {
         "name": "Kartoffeln mit Quark",

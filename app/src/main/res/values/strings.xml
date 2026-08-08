@@ -258,6 +258,8 @@
     <string name="analyzing_meal">Mahlzeit wird analysiert…</string>
     <string name="capture_error_short">Bitte beschreibe die Mahlzeit etwas genauer.</string>
     <string name="capture_error_photo">Das Bild konnte nicht sicher verarbeitet werden. Wähle ein anderes Foto.</string>
+    <string name="capture_error_camera_permission">Kamerazugriff ist deaktiviert. Erlaube den Zugriff in den App-Einstellungen und versuche es erneut.</string>
+    <string name="capture_error_camera_unavailable">Die Kamera konnte nicht geöffnet werden. Prüfe die Kamera-App und versuche es erneut.</string>
     <string name="capture_error_timeout">Die Analyse hat zu lange gedauert. Du kannst sie erneut versuchen.</string>
     <string name="capture_error_schema">Das Analyseergebnis war ungültig und wurde nicht gespeichert.</string>
     <string name="capture_error_session">Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.</string>

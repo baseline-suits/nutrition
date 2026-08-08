@@ -1,6 +1,8 @@
 package de.baseline.nutrition.ui.capture
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
@@ -77,6 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import de.baseline.nutrition.R
 import de.baseline.nutrition.domain.diary.MealEditorDraft
@@ -107,12 +110,22 @@ fun CaptureScreen(
     var showDiscard by rememberSaveable { mutableStateOf(false) }
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     var localError by rememberSaveable { mutableStateOf<String?>(null) }
+    var cameraPermissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var cameraPermissionRequested by rememberSaveable { mutableStateOf(false) }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) {
         val path = cameraPath
         if (it && path != null) {
             runCatching { normalizeImage(context, Uri.fromFile(File(path))) }
-                .onSuccess(viewModel::setPhoto)
+                .onSuccess {
+                    localError = null
+                    viewModel.setPhoto(it)
+                }
                 .onFailure {
                     File(path).delete()
                     localError = "photo_invalid"
@@ -127,27 +140,65 @@ fun CaptureScreen(
     ) { uri ->
         if (uri != null) {
             runCatching { normalizeImage(context, uri) }
-                .onSuccess(viewModel::setPhoto)
+                .onSuccess {
+                    localError = null
+                    viewModel.setPhoto(it)
+                }
                 .onFailure { localError = "photo_invalid" }
         }
     }
 
-    fun launchCamera() {
-        val file = File.createTempFile("baseline-camera-", ".jpg", context.cacheDir)
-        cameraPath = file.absolutePath
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
-        )
-        cameraLauncher.launch(uri)
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        cameraPermissionRequested = false
+        cameraPermissionGranted = granted
+        if (!granted) {
+            localError = "camera_permission_denied"
+        }
     }
 
-    LaunchedEffect(state.mode) {
-        if (state.mode == CaptureMode.Camera && state.photoPath == null &&
-            state.attachmentId == null
+    fun launchCamera() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
         ) {
-            launchCamera()
+            cameraPermissionGranted = false
+            if (!cameraPermissionRequested) {
+                cameraPermissionRequested = true
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+            return
+        }
+        cameraPermissionGranted = true
+        runCatching {
+            val file = File.createTempFile("baseline-camera-", ".jpg", context.cacheDir)
+            cameraPath = file.absolutePath
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file,
+            )
+            cameraLauncher.launch(uri)
+        }.onFailure { error ->
+            cameraPath?.let { path -> File(path).delete() }
+            cameraPath = null
+            localError = if (error is SecurityException) {
+                "camera_permission_denied"
+            } else {
+                "camera_unavailable"
+            }
+        }
+    }
+
+    LaunchedEffect(state.mode, cameraPermissionGranted) {
+        if (state.mode == CaptureMode.Camera && state.photoPath == null &&
+            state.attachmentId == null && cameraPath == null
+        ) {
+            if (cameraPermissionGranted) {
+                launchCamera()
+            } else if (!cameraPermissionRequested) {
+                launchCamera()
+            }
         } else if (state.mode == CaptureMode.Import && state.photoPath == null &&
             state.attachmentId == null
         ) {
@@ -629,6 +680,8 @@ private fun normalizeImage(context: Context, uri: Uri): String {
 private fun captureErrorLabel(code: String): Int = when (code) {
     "input_too_short" -> R.string.capture_error_short
     "photo_required", "photo_invalid", "invalid_image" -> R.string.capture_error_photo
+    "camera_permission_denied" -> R.string.capture_error_camera_permission
+    "camera_unavailable" -> R.string.capture_error_camera_unavailable
     "provider_timeout" -> R.string.capture_error_timeout
     "invalid_model_schema" -> R.string.capture_error_schema
     "invalid_session", "authentication_required" -> R.string.capture_error_session

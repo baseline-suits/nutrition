@@ -1,0 +1,12 @@
+[Unit]
+Description=Baseline Nutrition expired upload cleanup
+After=baseline-nutrition.service
+
+[Service]
+Type=oneshot
+User=baseline-nutrition
+Group=baseline-nutrition
+WorkingDirectory=/opt/baseline-nutrition/backend
+EnvironmentFile=/etc/baseline-nutrition/backend.env
+Environment=PYTHONPATH=/opt/baseline-nutrition/backend
+ExecStart=/opt/baseline-nutrition/.venv/bin/python /opt/baseline-nutrition/backend/manage.py cleanup-uploads

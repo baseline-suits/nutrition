@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Baseline Nutrition upload cleanup hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=baseline-nutrition-cleanup.service
+
+[Install]
+WantedBy=timers.target

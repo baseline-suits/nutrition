@@ -29,8 +29,10 @@ Wichtige Eigenschaften des aktuellen Stands:
   zunächst genau einen Uvicorn-Prozess auf einem Host.
 - Datenbank und BASELINE_OBJECT_STORE müssen auf persistentem Speicher
   liegen und gemeinsam gesichert werden.
-- Uvicorn soll nur auf 127.0.0.1:8000 lauschen. TLS, öffentliche Erreichbarkeit
-  und Weiterleitung von Forwarded-Headern übernimmt ein Reverse Proxy.
+- Für den aktuellen Cloudflare-Tunnel-Betrieb lauscht Uvicorn auf
+  0.0.0.0:8000. Der Port darf trotzdem nicht aus dem Internet erreichbar
+  sein; die Firewall sollte den Zugriff auf das lokale Netz beziehungsweise
+  den vorgesehenen Tunnelpfad begrenzen.
 - internalBeta ist für die private Beta gedacht und wird derzeit mit der
   Debug-Signatur gebaut. Diese Variante ist kein Play-Store-Release.
 - Die release-Variante verwendet im Repository noch einen Platzhalter-
@@ -42,12 +44,14 @@ Wichtige Eigenschaften des aktuellen Stands:
 ### Backend-Host
 
 - Linux-Host mit einem nicht privilegierten Service-Account
-- Python 3.13
+- Python 3.13 exakt. Mit den aktuell gepinnten Abhängigkeiten ist Python 3.14
+  derzeit nicht kompatibel.
 - DNS-Eintrag für den Beta- oder Produktionshost
 - TLS-fähiger Reverse Proxy, zum Beispiel Caddy oder Nginx
 - persistenter, regelmäßig gesicherter Speicher für SQLite und private Fotos
 - ausgehende HTTPS-Verbindungen zum Analyseanbieter und zu Open Food Facts
-- Firewall: öffentlich nur die Proxy-Ports 80/443; Port 8000 bleibt lokal
+- Firewall: öffentlich nur die Proxy-Ports 80/443; Port 8000 nur für den
+  vorgesehenen lokalen/Tunnel-Zugriff freigeben
 
 ### Android-Build-Host
 
@@ -56,6 +60,17 @@ Wichtige Eigenschaften des aktuellen Stands:
 - gesetztes ANDROID_HOME
 - optional adb für Installation und Smoke-Tests auf einem Gerät oder
   Emulator
+
+Auf Fedora 44 kann Python 3.13 parallel zum standardmäßigen Python 3.14
+installiert werden:
+
+~~~bash
+sudo dnf install python3.13
+/usr/bin/python3.13 --version
+~~~
+
+Danach für alle Baseline-Nutrition-Befehle explizit
+/usr/bin/python3.13 beziehungsweise die daraus erstellte Venv verwenden.
 
 Die vollständigen Projektvoraussetzungen stehen zusätzlich im
 [README](README.md).
@@ -97,11 +112,56 @@ sudo -u baseline-nutrition git -C /opt/baseline-nutrition status --short
 Virtuelle Umgebung erstellen und nur die Runtime-Abhängigkeiten installieren:
 
 ~~~bash
-sudo -u baseline-nutrition python3.13 -m venv \
+python313="$(command -v python3.13 || true)"
+if [ -z "$python313" ]; then
+  echo "Python 3.13 fehlt. Erst den System-Interpreter installieren."
+  exit 1
+fi
+"$python313" --version
+"$python313" -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version; print(sys.version)'
+
+sudo -u baseline-nutrition "$python313" -m venv \
   /opt/baseline-nutrition/.venv
 sudo -u baseline-nutrition /opt/baseline-nutrition/.venv/bin/python \
   -m pip install -r /opt/baseline-nutrition/backend/requirements.txt
 ~~~
+
+Wichtig: Nicht einfach python verwenden, wenn dieser Befehl auf Python 3.14
+zeigt. Eine bereits mit der falschen Version erzeugte Venv kann nicht durch
+einen späteren pip-Aufruf umgestellt werden. Falls der Installationsversuch
+bereits mit Python 3.14 gelaufen ist, den Service zunächst stoppen, die Venv
+reversibel umbenennen und sie mit Python 3.13 neu erzeugen:
+
+~~~bash
+python313="$(command -v python3.13 || true)"
+if [ -z "$python313" ]; then
+  echo "Python 3.13 fehlt. Erst den System-Interpreter installieren."
+  exit 1
+fi
+
+if sudo systemctl cat baseline-nutrition.service >/dev/null 2>&1; then
+  sudo systemctl stop baseline-nutrition
+fi
+
+if [ -d /opt/baseline-nutrition/.venv ]; then
+  venv_backup_suffix="$(date +%Y%m%d-%H%M%S)"
+  sudo mv /opt/baseline-nutrition/.venv \
+    "/opt/baseline-nutrition/.venv-python314-$venv_backup_suffix"
+fi
+
+sudo -u baseline-nutrition "$python313" -m venv \
+  /opt/baseline-nutrition/.venv
+sudo -u baseline-nutrition /opt/baseline-nutrition/.venv/bin/python \
+  -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version; print(sys.version)'
+sudo -u baseline-nutrition /opt/baseline-nutrition/.venv/bin/python \
+  -m pip install -r /opt/baseline-nutrition/backend/requirements.txt
+~~~
+
+Die alte Venv enthält keine persistenten Anwendungsdaten und kann nach
+erfolgreicher Prüfung später gelöscht werden. Wenn die Installation mit
+Python 3.13 trotzdem versucht, pydantic-core aus dem Quellcode zu bauen,
+zuerst Interpreter-Version und Plattform prüfen; für diesen Deploy sollte
+kein Python-3.14-PyO3-Build erzwungen werden.
 
 Für Tests und lokale Qualitätsprüfungen kann zusätzlich die
 Entwicklungsdatei installiert werden:
@@ -166,7 +226,23 @@ eine erfundene Down-Migration.
 
 ## 3. Backend als systemd-Service starten
 
-Die Unit unter /etc/systemd/system/baseline-nutrition.service anlegen:
+Eine versionierte Vorlage liegt in
+deploy/baseline-nutrition.service. Die Beispielkonfiguration für die
+Umgebungsvariablen liegt in deploy/backend.env.example. Auf dem Zielhost
+können die Dateien so installiert werden:
+
+~~~bash
+sudo install -D -o root -g root -m 0644 \
+  deploy/baseline-nutrition.service \
+  /etc/systemd/system/baseline-nutrition.service
+sudo install -d -o root -g root -m 0750 /etc/baseline-nutrition
+sudo install -o root -g root -m 0600 \
+  deploy/backend.env.example \
+  /etc/baseline-nutrition/backend.env
+~~~
+
+Vor dem Start OPENAI_API_KEY und die übrigen umgebungsspezifischen Werte in
+/etc/baseline-nutrition/backend.env prüfen. Die Unit selbst sieht so aus:
 
 ~~~ini
 [Unit]
@@ -181,7 +257,7 @@ Group=baseline-nutrition
 WorkingDirectory=/opt/baseline-nutrition/backend
 EnvironmentFile=/etc/baseline-nutrition/backend.env
 Environment=PYTHONPATH=/opt/baseline-nutrition/backend
-ExecStart=/opt/baseline-nutrition/.venv/bin/uvicorn baseline_api.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/opt/baseline-nutrition/.venv/bin/uvicorn baseline_api.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -251,30 +327,44 @@ Ein Zugangscode wird beim Erzeugen einmalig im Klartext ausgegeben. Ausgabe
 deshalb nur über einen sicheren Admin-Kanal weitergeben:
 
 ~~~bash
-cd /opt/baseline-nutrition/backend
+sudo bash -c '
 set -a
 . /etc/baseline-nutrition/backend.env
 set +a
-/opt/baseline-nutrition/.venv/bin/python manage.py \
-  create-access-code --hours 72
+cd /opt/baseline-nutrition/backend
+exec runuser -u baseline-nutrition -- /opt/baseline-nutrition/.venv/bin/python \
+  manage.py create-access-code --hours 72
+'
 ~~~
 
 Weitere Wartungsbefehle:
 
 ~~~bash
-cd /opt/baseline-nutrition/backend
+sudo bash -c '
 set -a
 . /etc/baseline-nutrition/backend.env
 set +a
-/opt/baseline-nutrition/.venv/bin/python manage.py cleanup-uploads
-/opt/baseline-nutrition/.venv/bin/python manage.py retry-deletions
-/opt/baseline-nutrition/.venv/bin/python manage.py analysis-report --days 7
+cd /opt/baseline-nutrition/backend
+runuser -u baseline-nutrition -- /opt/baseline-nutrition/.venv/bin/python manage.py cleanup-uploads
+runuser -u baseline-nutrition -- /opt/baseline-nutrition/.venv/bin/python manage.py retry-deletions
+runuser -u baseline-nutrition -- /opt/baseline-nutrition/.venv/bin/python manage.py analysis-report --days 7
+'
 ~~~
 
 cleanup-uploads und retry-deletions sollten über einen Scheduler regelmäßig
 laufen. Für den Anfang sind zum Beispiel stündliche Bereinigung und ein
 Retry-Lauf alle 5–15 Minuten angemessen. Die Befehle müssen mit denselben
 Umgebungsvariablen wie der Service ausgeführt werden.
+
+Dafür liegen versionierte systemd-Vorlagen in deploy/:
+
+- baseline-nutrition-cleanup.service und baseline-nutrition-cleanup.timer
+- baseline-nutrition-retry-deletions.service und
+  baseline-nutrition-retry-deletions.timer
+
+Die Timer laufen als User baseline-nutrition und können nach der Installation
+mit systemctl enable --now baseline-nutrition-cleanup.timer
+baseline-nutrition-retry-deletions.timer aktiviert werden.
 
 ## 6. Datenbank und private Fotos sichern
 
@@ -432,7 +522,8 @@ den Smoke-Test gegen die konkrete Umgebung.
 
 - [ ] Backend läuft als genau ein Prozess und startet nach einem Reboot.
 - [ ] https://beta.example.com/health antwortet erfolgreich (Domain ersetzen).
-- [ ] Port 8000 ist nicht öffentlich erreichbar.
+- [ ] Port 8000 ist nicht aus dem Internet erreichbar; bei 0.0.0.0-Bind ist
+      der Zugriff per Firewall auf den vorgesehenen Pfad begrenzt.
 - [ ] Ein neuer Zugangscode kann erzeugt und einmalig verwendet werden.
 - [ ] Zwei getrennte Benutzerkonten bleiben voneinander isoliert.
 - [ ] Mahlzeit anlegen, bearbeiten und synchronisieren funktioniert.

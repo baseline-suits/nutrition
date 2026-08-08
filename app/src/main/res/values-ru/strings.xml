@@ -258,6 +258,8 @@
     <string name="analyzing_meal">Анализируем приём пищи…</string>
     <string name="capture_error_short">Опишите приём пищи немного подробнее.</string>
     <string name="capture_error_photo">Не удалось безопасно обработать изображение. Выберите другое фото.</string>
+    <string name="capture_error_camera_permission">Доступ к камере отключён. Разрешите его в настройках приложения и повторите попытку.</string>
+    <string name="capture_error_camera_unavailable">Не удалось открыть камеру. Проверьте приложение камеры и повторите попытку.</string>
     <string name="capture_error_timeout">Анализ занял слишком много времени. Попробуйте ещё раз.</string>
     <string name="capture_error_schema">Результат анализа недействителен и не был сохранён.</string>
     <string name="capture_error_session">Сеанс истёк. Войдите снова.</string>
