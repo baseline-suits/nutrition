@@ -101,3 +101,8 @@ Die lokal verfügbaren Befehle entsprechen den Pflichtschritten der CI:
 ```
 
 Eine Übersicht der Gates und Artefakte steht in [docs/quality-gates.md](docs/quality-gates.md).
+
+## Deployment
+
+Der aktuell unterstützte manuelle Single-Host-/Private-Beta-Deploy für
+Backend und Android ist in [deploy.md](deploy.md) dokumentiert.
